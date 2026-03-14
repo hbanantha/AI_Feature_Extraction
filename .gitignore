@@ -1,0 +1,22 @@
+# Annotations Directory
+data/annotations/
+!data/annotations/README.txt
+
+# Raw dataset
+data/raw/
+!data/raw/README.txt
+
+# Generated tiles
+data/tiles/
+!data/raw/README.txt
+
+# Model outputs
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+venv/

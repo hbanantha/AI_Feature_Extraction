@@ -1,0 +1,199 @@
+# Configuration file for AI Feature Extraction from Drone Images
+
+# -------------------------
+# DATA CONFIGURATION
+# -------------------------
+
+data:
+
+  # Input directories
+  raw_data_dir: "data/raw"            # Original TIFF files location
+  tiles_dir: "data/tiles"             # Processed tiles directory
+  annotations_dir: "data/annotations" # Annotation masks directory
+
+  # Tile configuration
+  tile_size: 256        # Tile size (256 for low RAM, 512 for better context)
+  tile_overlap: 32      # Overlap between tiles (for seamless stitching)
+  min_valid_pixels: 0.7 # Minimum ratio of valid pixels in a tile
+
+  # Image channels
+  input_channels: 3     # RGB channels
+
+  # Class definitions
+  segmentation_classes:
+    0: "background"
+    1: "building_rcc"
+    2: "building_tiled"
+    3: "building_tin"
+    4: "building_others"
+    5: "road"
+    6: "waterbody"
+
+  detection_classes:
+    0: "distribution_transformer"
+    1: "overhead_tank"
+    2: "well"
+
+  num_seg_classes: 7
+  num_det_classes: 3
+
+
+# -------------------------
+# MODEL CONFIGURATION
+# -------------------------
+
+model:
+
+  # Segmentation model
+  segmentation:
+    encoder_name: "mobilenetv2"		#Lightweight encoder for low RAM
+    encoder_weights: "imagenet"		#Pretrained weights
+    decoder: "unet"					#U-Net decoder
+    activation: null				#Use None for logits, 'softmax' for probabilities
+    in_channels: 3
+    classes: 7						#Number of segmentation classes
+
+  # Object detection model (for transformers, tanks, wells)
+  detection:
+    model_name: "yolov5n"
+    classes: 3
+    pretrained: true
+
+
+# -------------------------
+# TRAINING CONFIGURATION
+# -------------------------
+
+training:
+
+  # General settings
+  batch_size: 2					#Small batch for 12GB RAM
+  num_workers: 2				#Data loading workers
+  epochs_per_village_batch: 10	#Epochs per incrementaltraining batch
+  max_epochs: 100
+  
+# -------------------------
+# OPTIMIZATION SETTINGS
+# -------------------------
+
+optimization:
+
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  lr_scheduler: "cosine"   # Options: cosine, step, plateau
+
+  # Optimizer
+  optimizer: "adamw"       # Options: adam, adamw, sgd
+
+  # Mixed precision for memory efficiency
+  use_amp: true            # Automatic Mixed Precision
+
+  # Gradient accumulation for effective larger batch
+  gradient_accumulation_steps: 4
+
+  # Early stopping
+  early_stopping_patience: 5
+
+
+# -------------------------
+# CHECKPOINTING
+# -------------------------
+
+checkpointing:
+
+  checkpoint_dir: "outputs/checkpoints"
+  save_best_only: true
+
+
+# -------------------------
+# INCREMENTAL LEARNING
+# -------------------------
+
+incremental:
+
+  enabled: true
+  villages_per_batch: 2      # Train on 2 villages at a time
+  use_ewc: true              # Elastic Weight Consolidation
+  ewc_lambda: 0.4            # EWC regularization strength
+  replay_buffer_size: 1000   # Number of samples to keep for replay
+
+
+# -------------------------
+# DATA AUGMENTATION
+# -------------------------
+
+augmentation:
+
+  train:
+    horizontal_flip: 0.5
+    vertical_flip: 0.5
+    rotate_90: 0.5
+    random_brightness_contrast: 0.3
+    random_gamma: 0.3
+    gaussian_blur: 0.2
+    gaussian_noise: 0.2
+
+  val:
+    normalize: true   # No augmentation for validation
+
+
+# -------------------------
+# INFERENCE CONFIGURATION
+# -------------------------
+
+inference:
+
+  # Sliding window settings
+  stride: 224
+  batch_size: 1       # Conservative for inference
+
+  # Post-processing
+  confidence_threshold: 0.5
+  min_building_area: 25   # Minimum building area in pixels
+  min_road_length: 10     # Minimum road segment length
+
+  # Output
+  output_dir: "outputs/predictions"
+  save_geotiff: true
+  save_shapefile: true
+
+
+# -------------------------
+# HARDWARE OPTIMIZATION
+# -------------------------
+
+hardware:
+
+  device: "cpu"         # Change to "cuda" if GPU available
+  memory_limit_gb: 8
+  pin_memory: false     # Disable for CPU
+
+
+# -------------------------
+# LOGGING AND MONITORING
+# -------------------------
+
+logging:
+
+  log_dir: "outputs/logs"
+  log_level: "INFO"
+  save_frequency: 100       # Log every N batches
+  visualize_predictions: true
+  visualization_dir: "outputs/visualizations"
+
+
+# -------------------------
+# EVALUATION METRICS
+# -------------------------
+
+evaluation:
+
+  metrics:
+    - "iou"        # Intersection over Union
+    - "dice"       # Dice coefficient
+    - "precision"
+    - "recall"
+    - "f1"
+    - "accuracy"
+	
+target_accuracy: 0.95	#Target 95% accuracy
