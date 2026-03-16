@@ -20,5 +20,5 @@ __pycache__/
 # Environment
 .env
 venv/
-
+.venv
 .idea
