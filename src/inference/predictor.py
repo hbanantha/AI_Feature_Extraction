@@ -19,12 +19,14 @@ from tqdm import tqdm
 import rasterio
 from rasterio.windows import Window
 from rasterio.features import shapes
+from rasterio.crs import CRS
 import geopandas as gpd
 from shapely.geometry import shape, Polygon, MultiPolygon
 import cv2
 
 from ..models import load_model, create_model
 from ..preprocessing import get_validation_augmentation
+from .gis_export import GISExporter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,6 +77,15 @@ class FeatureExtractor:
         self.output_dir = Path(config["inference"]["output_dir"])
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Initialize GIS exporter
+        self.gis_exporter = GISExporter(
+            output_dir=str(self.output_dir),
+            crs=None,  # Will be set from source data
+            min_polygon_area=config["inference"].get("min_building_area", 10.0),
+            min_line_length=config["inference"].get("min_road_length", 5.0),
+            config=config
+        )
+
         logger.info("Feature extractor initialized")
         logger.info(f"Tile size: {self.tile_size}, Stride: {self.stride}")
 
@@ -118,6 +129,13 @@ class FeatureExtractor:
             height = src.height
             crs = src.crs
             transform = src.transform
+
+            # Update GIS exporter with source CRS
+            if crs is not None:
+                self.gis_exporter.crs = crs
+            else:
+                logger.warning("No CRS found in source, using WGS84")
+                self.gis_exporter.crs = CRS.from_epsg(4326)
 
             logger.info(f"Image size: {width} x {height}")
             logger.info(f"CRS: {crs}")
@@ -204,17 +222,15 @@ class FeatureExtractor:
         )
         output_paths["visualization"] = str(vis_path)
 
-        # Convert to vector (shapefile)
-        for class_idx, class_name in enumerate(self.class_names):
-            if class_idx == 0:  # Skip background
-                continue
-
-            shp_path = self.output_dir / f"{output_name}_{class_name}.shp"
-            self._extract_polygons(
-                class_predictions, class_idx, class_name,
-                shp_path, crs, transform
-            )
-            output_paths[f"shapefile_{class_name}"] = str(shp_path)
+        # Export to GIS formats (Shapefile + GeoPackage)
+        logger.info("Exporting predictions to GIS formats...")
+        gis_outputs = self.gis_exporter.export_predictions(
+            class_predictions,
+            transform,
+            output_name,
+            confidence
+        )
+        output_paths.update(gis_outputs)
 
         # Save metadata
         meta_path = self.output_dir / f"{output_name}_metadata.json"
@@ -356,61 +372,6 @@ class FeatureExtractor:
 
         logger.info(f"Visualization saved: {output_path}")
 
-    def _extract_polygons(
-        self,
-        predictions: np.ndarray,
-        class_idx: int,
-        class_name: str,
-        output_path: Path,
-        crs,
-        transform
-    ):
-        """Extract polygons for a class and save as shapefile."""
-        # Create binary mask for class
-        mask = (predictions == class_idx).astype(np.uint8)
-
-        # Apply morphological operations to clean up
-        kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-        # Extract polygons
-        polygons = []
-        properties = []
-
-        for geom, value in shapes(mask, transform=transform):
-            if value == 1:
-                polygon = shape(geom)
-
-                # Filter small polygons
-                if class_name.startswith("building"):
-                    min_area = self.config["inference"]["min_building_area"]
-                elif class_name == "road":
-                    min_area = self.config["inference"]["min_road_length"]
-                else:
-                    min_area = 1
-
-                if polygon.area >= min_area:
-                    polygons.append(polygon)
-                    properties.append({
-                        "class": class_name,
-                        "area_sqm": polygon.area,
-                        "perimeter_m": polygon.length
-                    })
-
-        if polygons:
-            # Create GeoDataFrame
-            gdf = gpd.GeoDataFrame(
-                properties,
-                geometry=polygons,
-                crs=crs
-            )
-
-            # Save shapefile
-            gdf.to_file(output_path)
-            logger.info(f"Shapefile saved: {output_path} ({len(polygons)} polygons)")
-        else:
-            logger.info(f"No polygons found for class: {class_name}")
 
     def _save_metadata(
         self,

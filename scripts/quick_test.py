@@ -7,6 +7,9 @@ Run this to verify the installation and test basic functionality.
 import sys
 from pathlib import Path
 
+# Add parent directory to path so imports work
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 def test_imports():
     """Test that all required modules can be imported."""
     print("Testing imports...")

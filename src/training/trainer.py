@@ -19,16 +19,16 @@ from tqdm import tqdm
 import numpy as np
 import yaml
 
-from models import create_model
-from preprocessing import (
+from src.models import create_model
+from src.preprocessing import (
     DroneImageDataset,
     IncrementalDataset,
     ReplayBuffer,
     get_training_augmentation,
     get_validation_augmentation
 )
-from losses import CombinedSegmentationLoss, EWCLoss
-from metrics import SegmentationMetrics
+from src.training.losses import CombinedSegmentationLoss, EWCLoss
+from src.training.metrics import SegmentationMetrics
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

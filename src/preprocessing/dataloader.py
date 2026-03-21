@@ -187,6 +187,71 @@ class DroneImageDataset(Dataset):
 
 
 # ==============================================================
+# IncrementalDataset
+# ==============================================================
+
+class IncrementalDataset(Dataset):
+    """
+    Wrapper around DroneImageDataset that adds replay buffer support
+    for incremental/continual learning.
+    """
+
+    def __init__(
+        self,
+        base_dataset: DroneImageDataset,
+        replay_buffer: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
+        replay_ratio: float = 0.2,
+    ):
+        """
+        Args:
+            base_dataset: The underlying DroneImageDataset
+            replay_buffer: List of (image, mask) tuples from previous tasks
+            replay_ratio: Ratio of replay samples to use (0.0 to 1.0)
+        """
+        self.base_dataset = base_dataset
+        self.replay_buffer = replay_buffer or []
+        self.replay_ratio = replay_ratio
+
+    def __len__(self) -> int:
+        base_len = len(self.base_dataset)
+        replay_len = int(len(self.replay_buffer) * self.replay_ratio)
+        return base_len + replay_len
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        base_len = len(self.base_dataset)
+
+        if idx < base_len:
+            # Return from base dataset
+            return self.base_dataset[idx]
+        else:
+            # Return from replay buffer
+            replay_idx = idx - base_len
+            replay_idx = replay_idx % len(self.replay_buffer)
+
+            image, mask = self.replay_buffer[replay_idx]
+
+            # Apply same transforms as base dataset if available
+            if self.base_dataset.transform:
+                transformed = self.base_dataset.transform(
+                    image=image, mask=mask
+                )
+                image = transformed["image"]
+                mask = transformed["mask"]
+            else:
+                image = (
+                    torch.from_numpy(image.transpose(2, 0, 1)).float()
+                    / 255.0
+                )
+                mask = torch.from_numpy(mask).long()
+
+            return {
+                "image": image,
+                "mask": mask,
+                "path": f"replay_buffer_{replay_idx}",
+            }
+
+
+# ==============================================================
 # ReplayBuffer
 # ==============================================================
 
@@ -230,6 +295,128 @@ class ReplayBuffer:
     def load(self, path: str):
         data = np.load(path, allow_pickle=True)
         self.buffer = list(data)
+
+
+
+
+# ==============================================================
+# Augmentation Functions
+# ==============================================================
+
+def get_training_augmentation(config: Dict) -> A.Compose:
+    """
+    Create training augmentation pipeline.
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Albumentations Compose object
+    """
+    aug_config = config.get("augmentation", {}).get("train", {})
+    
+    return A.Compose(
+        [
+            A.HorizontalFlip(p=aug_config.get("horizontal_flip_p", 0.5)),
+            A.VerticalFlip(p=aug_config.get("vertical_flip_p", 0.5)),
+            A.Rotate(
+                limit=aug_config.get("rotate_limit", 45),
+                p=aug_config.get("rotate_p", 0.5),
+            ),
+            A.GaussNoise(p=aug_config.get("gauss_noise_p", 0.2)),
+            A.OneOf(
+                [
+                    A.GaussianBlur(),
+                    A.MotionBlur(),
+                ],
+                p=aug_config.get("blur_p", 0.2),
+            ),
+            A.OneOf(
+                [
+                    A.OpticalDistortion(),
+                    A.GridDistortion(),
+                ],
+                p=aug_config.get("distortion_p", 0.1),
+            ),
+            A.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+            ToTensorV2(),
+        ],
+        keypoint_params=None,
+    )
+
+
+def get_validation_augmentation(config: Dict) -> A.Compose:
+    """
+    Create validation augmentation pipeline (minimal).
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Albumentations Compose object
+    """
+    return A.Compose(
+        [
+            A.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+            ToTensorV2(),
+        ],
+        keypoint_params=None,
+    )
+
+
+def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
+    """
+    Create training and validation dataloaders from config.
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Tuple of (train_loader, val_loader)
+    """
+    # Get augmentation pipelines
+    train_transform = get_training_augmentation(config)
+    val_transform = get_validation_augmentation(config)
+    
+    # Create datasets
+    train_dataset = DroneImageDataset(
+        tiles_dir=config["data"]["tiles_dir"],
+        masks_dir=config["data"].get("annotations_dir"),
+        transform=train_transform,
+        is_training=True,
+    )
+    
+    val_dataset = DroneImageDataset(
+        tiles_dir=config["data"]["tiles_dir"],
+        masks_dir=config["data"].get("annotations_dir"),
+        transform=val_transform,
+        is_training=False,
+    )
+    
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config["training"].get("batch_size", 4),
+        shuffle=True,
+        num_workers=config["training"].get("num_workers", 0),
+        pin_memory=config["hardware"].get("pin_memory", False),
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config["training"].get("batch_size", 4),
+        shuffle=False,
+        num_workers=config["training"].get("num_workers", 0),
+        pin_memory=config["hardware"].get("pin_memory", False),
+    )
+    
+    return train_loader, val_loader
 
 
 # ==============================================================
