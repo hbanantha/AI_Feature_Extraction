@@ -9,7 +9,7 @@ data:
   # Input directories
   raw_data_dir: "data/raw"            # Original TIFF files location
   tiles_dir: "data/tiles"             # Processed tiles directory
-  annotations_dir: "data/annotations" # Annotation masks directory
+  annotations_dir: "data/tiles"       # Annotation masks directory (same as tiles_dir for now)
 
   # Tile configuration
   tile_size: 256        # Tile size (256 for low RAM, 512 for better context)
@@ -46,12 +46,12 @@ model:
 
   # Segmentation model
   segmentation:
-    encoder_name: "mobilenetv2"		#Lightweight encoder for low RAM
-    encoder_weights: "imagenet"		#Pretrained weights
-    decoder: "unet"					#U-Net decoder
-    activation: null				#Use None for logits, 'softmax' for probabilities
+    encoder_name: "mobilenet_v2"  # Lightweight encoder for low RAM
+    encoder_weights: "imagenet"   # Pretrained weights
+    decoder: "unet"               # U-Net decoder
+    activation: null              # Use None for logits, 'softmax' for probabilities
     in_channels: 3
-    classes: 7						#Number of segmentation classes
+    classes: 7                    # Number of segmentation classes
 
   # Object detection model (for transformers, tanks, wells)
   detection:
@@ -67,10 +67,29 @@ model:
 training:
 
   # General settings
-  batch_size: 2					#Small batch for 12GB RAM
-  num_workers: 2				#Data loading workers
-  epochs_per_village_batch: 10	#Epochs per incrementaltraining batch
-  max_epochs: 100
+  batch_size: 2                    # Small batch for 12GB RAM
+  num_workers: 0                   # Data loading workers (0 for Windows compatibility)
+  epochs_per_village_batch: 2      # Epochs per incremental training batch (reduced for testing)
+  max_epochs: 2                    # Max total epochs (reduced for testing)
+  learning_rate: 0.0001            # Learning rate
+  weight_decay: 0.0001             # Weight decay for regularization
+  optimizer: "adamw"               # Optimizer: adam, adamw, sgd
+  lr_scheduler: "cosine"           # LR scheduler: cosine, step, plateau
+  gradient_accumulation_steps: 4   # Gradient accumulation steps
+  early_stopping_patience: 5       # Early stopping patience
+  use_amp: true                    # Automatic Mixed Precision
+
+  # Incremental learning
+  incremental:
+    enabled: true
+    villages_per_batch: 1          # Train on 1 village at a time (we only have 1)
+    use_ewc: true                  # Elastic Weight Consolidation
+    ewc_lambda: 0.4                # EWC regularization strength
+    replay_buffer_size: 1000       # Number of samples to keep for replay
+
+  # Checkpointing
+  checkpoint_dir: "outputs/checkpoints"
+  save_best_only: true
   
 # -------------------------
 # OPTIMIZATION SETTINGS
@@ -195,5 +214,5 @@ evaluation:
     - "recall"
     - "f1"
     - "accuracy"
-	
-target_accuracy: 0.95	#Target 95% accuracy
+
+  target_accuracy: 0.95   # Target 95% accuracy

@@ -42,6 +42,7 @@ class LightweightUNet(nn.Module):
         """
         super().__init__()
 
+        self.encoder_name = encoder_name
         self.model = smp.Unet(
             encoder_name=encoder_name,
             encoder_weights=encoder_weights,
@@ -58,7 +59,7 @@ class LightweightUNet(nn.Module):
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-        logger.info(f"Model: Lightweight U-Net with {self.model.encoder.name}")
+        logger.info(f"Model: Lightweight U-Net with {self.encoder_name}")
         logger.info(f"Total parameters: {total_params:,}")
         logger.info(f"Trainable parameters: {trainable_params:,}")
         logger.info(f"Model size: ~{total_params * 4 / (1024**2):.2f} MB (FP32)")

@@ -295,11 +295,15 @@ class IncrementalTrainer:
 
         self.setup()
 
-        val_ratio = 0.2
-        n_val = max(1, int(len(villages) * val_ratio))
-
-        val_villages = villages[-n_val:]
-        train_villages = villages[:-n_val]
+        # For single village, use it for both training and validation
+        if len(villages) == 1:
+            train_villages = villages
+            val_villages = villages
+        else:
+            val_ratio = 0.2
+            n_val = max(1, int(len(villages) * val_ratio))
+            val_villages = villages[-n_val:]
+            train_villages = villages[:-n_val]
 
         num_batches = (
             len(train_villages) + self.villages_per_batch - 1

@@ -173,6 +173,9 @@ class DroneImageDataset(Dataset):
             transformed = self.transform(image=tile, mask=mask)
             tile = transformed["image"]
             mask = transformed["mask"]
+            # Ensure mask is long type for cross_entropy loss
+            if isinstance(mask, torch.Tensor):
+                mask = mask.long()
         else:
             tile = (
                 torch.from_numpy(tile.transpose(2, 0, 1)).float() / 255.0
