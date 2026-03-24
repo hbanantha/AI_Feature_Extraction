@@ -46,12 +46,12 @@ model:
 
   # Segmentation model
   segmentation:
-    encoder_name: "mobilenetv2"		#Lightweight encoder for low RAM
-    encoder_weights: "imagenet"		#Pretrained weights
-    decoder: "unet"					#U-Net decoder
-    activation: null				#Use None for logits, 'softmax' for probabilities
+    encoder_name: "mobilenetv2"     # Lightweight encoder for low RAM
+    encoder_weights: "imagenet"     # Pretrained weights
+    decoder: "unet"                 # U-Net decoder
+    activation: null                # Use None for logits, 'softmax' for probabilities
     in_channels: 3
-    classes: 7						#Number of segmentation classes
+    classes: 7                      # Number of segmentation classes
 
   # Object detection model (for transformers, tanks, wells)
   detection:
@@ -67,11 +67,12 @@ model:
 training:
 
   # General settings
-  batch_size: 2					#Small batch for 12GB RAM
-  num_workers: 2				#Data loading workers
-  epochs_per_village_batch: 10	#Epochs per incrementaltraining batch
+  batch_size: 2                     # Small batch for 12GB RAM
+  num_workers: 2                    # Data loading workers
+  epochs_per_village_batch: 10      # Epochs per incremental training batch
   max_epochs: 100
-  
+
+
 # -------------------------
 # OPTIMIZATION SETTINGS
 # -------------------------
@@ -195,5 +196,6 @@ evaluation:
     - "recall"
     - "f1"
     - "accuracy"
-	
-target_accuracy: 0.95	#Target 95% accuracy
+
+target_accuracy: 0.95    # Target 95% accuracy
+
