@@ -50,15 +50,15 @@ class IncrementalTrainer:
         self.num_workers = config["training"]["num_workers"]
         self.epochs_per_batch = config["training"]["epochs_per_village_batch"]
         self.max_epochs = config["training"]["max_epochs"]
-        self.lr = config["training"]["learning_rate"]
-        self.gradient_accumulation_steps = config["training"]["gradient_accumulation_steps"]
+        self.lr = config["optimization"]["learning_rate"]
+        self.gradient_accumulation_steps = config["optimization"]["gradient_accumulation_steps"]
 
         # Mixed precision
-        self.use_amp = config["training"]["use_amp"] and self.device == "cuda"
+        self.use_amp = config["optimization"]["use_amp"] and self.device == "cuda"
         self.scaler = GradScaler() if self.use_amp else None
 
         # Incremental
-        inc_cfg = config["training"]["incremental"]
+        inc_cfg = config["incremental"]
         self.use_ewc = inc_cfg["use_ewc"]
         self.ewc_lambda = inc_cfg["ewc_lambda"]
         self.villages_per_batch = inc_cfg["villages_per_batch"]
@@ -79,7 +79,7 @@ class IncrementalTrainer:
         )
 
         # Paths
-        self.checkpoint_dir = Path(config["training"]["checkpoint_dir"])
+        self.checkpoint_dir = Path(config["checkpointing"]["checkpoint_dir"])
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self.log_dir = Path(config["logging"]["log_dir"])
@@ -100,7 +100,7 @@ class IncrementalTrainer:
         self.optimizer = optim.AdamW(
             self.model.parameters(),
             lr=self.lr,
-            weight_decay=self.config["training"]["weight_decay"]
+            weight_decay=self.config["optimization"]["weight_decay"]
         )
 
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -252,7 +252,7 @@ class IncrementalTrainer:
         )
 
         best_batch_miou = 0
-        patience = self.config["training"]["early_stopping_patience"]
+        patience = self.config["optimization"]["early_stopping_patience"]
         patience_counter = 0
 
         for epoch in range(self.epochs_per_batch):

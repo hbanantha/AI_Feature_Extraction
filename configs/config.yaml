@@ -46,7 +46,7 @@ model:
 
   # Segmentation model
   segmentation:
-    encoder_name: "mobilenetv2"     # Lightweight encoder for low RAM
+    encoder_name: "mobilenet_v2"     # Lightweight encoder for low RAM
     encoder_weights: "imagenet"     # Pretrained weights
     decoder: "unet"                 # U-Net decoder
     activation: null                # Use None for logits, 'softmax' for probabilities
