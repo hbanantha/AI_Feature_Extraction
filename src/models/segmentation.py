@@ -349,6 +349,7 @@ def load_model(
         Loaded model
     """
     model = create_model(config)
+    model.model.freeze_encoder()
     checkpoint = torch.load(model_path, map_location=device)
 
     if "model_state_dict" in checkpoint:

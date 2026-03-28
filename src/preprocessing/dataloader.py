@@ -92,9 +92,13 @@ class DroneImageDataset(Dataset):
                     self.tile_paths.append(tile_path)
 
                     if self.masks_dir:
-                        mask_path = self._find_mask_path(
-                            tile_path, village_dir.name
-                        )
+                        self.mask_map = {}
+                        for mask_file in self.masks_dir.rglob("*"):
+                            self.mask_map[mask_file.stem] = mask_file
+                        mask_path = self.mask_map.get(tile_path)
+                        # mask_path = self._find_mask_path(
+                        #     tile_path, village_dir.name
+                        # )
                         self.mask_paths.append(mask_path)
 
     def _find_mask_path(
@@ -310,50 +314,61 @@ class ReplayBuffer:
 # Augmentation Functions
 # ==============================================================
 
+# def get_training_augmentation(config: Dict) -> A.Compose:
+#     """
+#     Create training augmentation pipeline.
+#
+#     Args:
+#         config: Configuration dictionary
+#
+#     Returns:
+#         Albumentations Compose object
+#     """
+#     aug_config = config.get("augmentation", {}).get("train", {})
+#
+#     return A.Compose(
+#         [
+#             A.HorizontalFlip(p=aug_config.get("horizontal_flip_p", 0.5)),
+#             A.VerticalFlip(p=aug_config.get("vertical_flip_p", 0.5)),
+#             A.Rotate(
+#                 limit=aug_config.get("rotate_limit", 45),
+#                 p=aug_config.get("rotate_p", 0.5),
+#             ),
+#             A.GaussNoise(p=aug_config.get("gauss_noise_p", 0.2)),
+#             A.OneOf(
+#                 [
+#                     A.GaussianBlur(),
+#                     A.MotionBlur(),
+#                 ],
+#                 p=aug_config.get("blur_p", 0.2),
+#             ),
+#             A.OneOf(
+#                 [
+#                     A.OpticalDistortion(),
+#                     A.GridDistortion(),
+#                 ],
+#                 p=aug_config.get("distortion_p", 0.1),
+#             ),
+#             A.Normalize(
+#                 mean=[0.485, 0.456, 0.406],
+#                 std=[0.229, 0.224, 0.225],
+#             ),
+#             ToTensorV2(),
+#         ],
+#         keypoint_params=None,
+#     )
 def get_training_augmentation(config: Dict) -> A.Compose:
-    """
-    Create training augmentation pipeline.
-    
-    Args:
-        config: Configuration dictionary
-    
-    Returns:
-        Albumentations Compose object
-    """
-    aug_config = config.get("augmentation", {}).get("train", {})
-    
-    return A.Compose(
-        [
-            A.HorizontalFlip(p=aug_config.get("horizontal_flip_p", 0.5)),
-            A.VerticalFlip(p=aug_config.get("vertical_flip_p", 0.5)),
-            A.Rotate(
-                limit=aug_config.get("rotate_limit", 45),
-                p=aug_config.get("rotate_p", 0.5),
-            ),
-            A.GaussNoise(p=aug_config.get("gauss_noise_p", 0.2)),
-            A.OneOf(
-                [
-                    A.GaussianBlur(),
-                    A.MotionBlur(),
-                ],
-                p=aug_config.get("blur_p", 0.2),
-            ),
-            A.OneOf(
-                [
-                    A.OpticalDistortion(),
-                    A.GridDistortion(),
-                ],
-                p=aug_config.get("distortion_p", 0.1),
-            ),
-            A.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-            ToTensorV2(),
-        ],
-        keypoint_params=None,
-    )
+    return A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
 
+        A.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+        ToTensorV2(),
+    ])
 
 def get_validation_augmentation(config: Dict) -> A.Compose:
     """
@@ -397,6 +412,7 @@ def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
         masks_dir=config["data"].get("annotations_dir"),
         transform=train_transform,
         is_training=True,
+        load_to_memory=True
     )
     
     val_dataset = DroneImageDataset(
@@ -413,6 +429,7 @@ def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
         shuffle=True,
         num_workers=config["training"].get("num_workers", 0),
         pin_memory=config["hardware"].get("pin_memory", False),
+        persistent_workers=True
     )
     
     val_loader = DataLoader(

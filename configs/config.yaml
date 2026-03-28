@@ -8,8 +8,8 @@ data:
 
   # Input directories
   raw_data_dir: "data/raw"            # Original TIFF files location
-  tiles_dir: "data/tiles"             # Processed tiles directory
-  annotations_dir: "data/annotations" # Annotation masks directory
+  tiles_dir: "D:/AI_Feature_Extraction/data/tiles"             # Processed tiles directory
+  annotations_dir: "D:/AI_Feature_Extraction/data/annotations" # Annotation masks directory
 
   # Tile configuration
   tile_size: 256        # Tile size (256 for low RAM, 512 for better context)
@@ -67,8 +67,8 @@ model:
 training:
 
   # General settings
-  batch_size: 2                     # Small batch for 12GB RAM
-  num_workers: 2                    # Data loading workers
+  batch_size: 16                     # Small batch for 12GB RAM
+  num_workers: 6                    # Data loading workers
   epochs_per_village_batch: 10      # Epochs per incremental training batch
   max_epochs: 100
 
@@ -90,7 +90,7 @@ optimization:
   use_amp: true            # Automatic Mixed Precision
 
   # Gradient accumulation for effective larger batch
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 1
 
   # Early stopping
   early_stopping_patience: 5
@@ -102,7 +102,7 @@ optimization:
 
 checkpointing:
 
-  checkpoint_dir: "outputs/checkpoints"
+  checkpoint_dir: "D:/AI_Feature_Extraction/outputs/checkpoints"
   save_best_only: true
 
 
@@ -130,9 +130,9 @@ augmentation:
     vertical_flip: 0.5
     rotate_90: 0.5
     random_brightness_contrast: 0.3
-    random_gamma: 0.3
-    gaussian_blur: 0.2
-    gaussian_noise: 0.2
+#    random_gamma: 0.3
+#    gaussian_blur: 0.2
+#    gaussian_noise: 0.2
 
   val:
     normalize: true   # No augmentation for validation
