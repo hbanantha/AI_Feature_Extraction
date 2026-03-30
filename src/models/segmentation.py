@@ -332,6 +332,36 @@ def create_model(config: Dict) -> nn.Module:
     return FeatureExtractor(config, pretrained=True)
 
 
+# def load_model(
+#     model_path: str,
+#     config: Dict,
+#     device: str = "cpu"
+# ) -> nn.Module:
+#     """
+#     Load a trained model from checkpoint.
+#
+#     Args:
+#         model_path: Path to checkpoint file
+#         config: Model configuration
+#         device: Device to load model on
+#
+#     Returns:
+#         Loaded model
+#     """
+#     model = create_model(config)
+#     model.model.freeze_encoder()
+#     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+#
+#     if "model_state_dict" in checkpoint:
+#         model.load_state_dict(checkpoint["model_state_dict"])
+#     else:
+#         model.load_state_dict(checkpoint)
+#
+#     model.to(device)
+#     model.eval()
+#
+#     logger.info(f"Model loaded from {model_path}")
+#     return model
 def load_model(
     model_path: str,
     config: Dict,
@@ -350,19 +380,24 @@ def load_model(
     """
     model = create_model(config)
     model.model.freeze_encoder()
-    checkpoint = torch.load(model_path, map_location=device)
 
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+
+    # Handle different checkpoint formats
     if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
+        state_dict = checkpoint["model_state_dict"]
+    elif "model" in checkpoint:
+        state_dict = checkpoint["model"]
     else:
-        model.load_state_dict(checkpoint)
+        state_dict = checkpoint  # assume it's already a state dict
+
+    model.load_state_dict(state_dict)
 
     model.to(device)
     model.eval()
 
     logger.info(f"Model loaded from {model_path}")
     return model
-
 
 if __name__ == "__main__":
     # Test model creation

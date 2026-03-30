@@ -159,7 +159,6 @@ class DroneImageDataset(Dataset):
         return len(self.tile_paths)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-
         if self.cached_data is not None:
             tile, mask = self.cached_data[idx]
         else:
@@ -169,9 +168,11 @@ class DroneImageDataset(Dataset):
                 mask = self._load_mask(self.mask_paths[idx])
 
         if mask is None:
-            mask = np.zeros(
-                (tile.shape[0], tile.shape[1]), dtype=np.int64
-            )
+            mask = np.zeros((tile.shape[0], tile.shape[1]), dtype=np.int64)
+
+            # Ensure mask matches tile dimensions
+        if mask.shape[:2] != tile.shape[:2]:
+            mask = cv2.resize(mask, (tile.shape[1], tile.shape[0]), interpolation=cv2.INTER_NEAREST)
 
         if self.transform:
             transformed = self.transform(image=tile, mask=mask)
@@ -179,22 +180,52 @@ class DroneImageDataset(Dataset):
             mask = transformed["mask"]
             if not isinstance(mask, torch.Tensor):
                 mask = torch.from_numpy(mask)
-
             if mask.ndim == 3:
                 mask = mask.squeeze(0)
-
             mask = mask.long()
         else:
-            tile = (
-                torch.from_numpy(tile.transpose(2, 0, 1)).float() / 255.0
-            )
+            tile = torch.from_numpy(tile.transpose(2, 0, 1)).float() / 255.0
             mask = torch.from_numpy(mask).long()
 
-        return {
-            "image": tile,
-            "mask": mask,
-            "path": str(self.tile_paths[idx]),
-        }
+        return {"image": tile, "mask": mask, "path": str(self.tile_paths[idx])}
+
+        # =====================================
+
+        # if self.cached_data is not None:
+        #     tile, mask = self.cached_data[idx]
+        # else:
+        #     tile = self._load_tile(self.tile_paths[idx])
+        #     mask = None
+        #     if idx < len(self.mask_paths):
+        #         mask = self._load_mask(self.mask_paths[idx])
+        #
+        # if mask is None:
+        #     mask = np.zeros(
+        #         (tile.shape[0], tile.shape[1]), dtype=np.int64
+        #     )
+        #
+        # if self.transform:
+        #     transformed = self.transform(image=tile, mask=mask)
+        #     tile = transformed["image"]
+        #     mask = transformed["mask"]
+        #     if not isinstance(mask, torch.Tensor):
+        #         mask = torch.from_numpy(mask)
+        #
+        #     if mask.ndim == 3:
+        #         mask = mask.squeeze(0)
+        #
+        #     mask = mask.long()
+        # else:
+        #     tile = (
+        #         torch.from_numpy(tile.transpose(2, 0, 1)).float() / 255.0
+        #     )
+        #     mask = torch.from_numpy(mask).long()
+        #
+        # return {
+        #     "image": tile,
+        #     "mask": mask,
+        #     "path": str(self.tile_paths[idx]),
+        # }
 
 
 # ==============================================================
@@ -230,36 +261,57 @@ class IncrementalDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         base_len = len(self.base_dataset)
-
         if idx < base_len:
-            # Return from base dataset
             return self.base_dataset[idx]
         else:
-            # Return from replay buffer
             replay_idx = idx - base_len
             replay_idx = replay_idx % len(self.replay_buffer)
-
             image, mask = self.replay_buffer[replay_idx]
 
-            # Apply same transforms as base dataset if available
+            if mask.shape[:2] != image.shape[:2]:
+                mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+
             if self.base_dataset.transform:
-                transformed = self.base_dataset.transform(
-                    image=image, mask=mask
-                )
+                transformed = self.base_dataset.transform(image=image, mask=mask)
                 image = transformed["image"]
                 mask = transformed["mask"]
             else:
-                image = (
-                    torch.from_numpy(image.transpose(2, 0, 1)).float()
-                    / 255.0
-                )
+                image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
                 mask = torch.from_numpy(mask).long()
 
-            return {
-                "image": image,
-                "mask": mask,
-                "path": f"replay_buffer_{replay_idx}",
-            }
+            return {"image": image, "mask": mask, "path": f"replay_buffer_{replay_idx}"}
+
+    # base_len = len(self.base_dataset)
+        #
+        # if idx < base_len:
+        #     # Return from base dataset
+        #     return self.base_dataset[idx]
+        # else:
+        #     # Return from replay buffer
+        #     replay_idx = idx - base_len
+        #     replay_idx = replay_idx % len(self.replay_buffer)
+        #
+        #     image, mask = self.replay_buffer[replay_idx]
+        #
+        #     # Apply same transforms as base dataset if available
+        #     if self.base_dataset.transform:
+        #         transformed = self.base_dataset.transform(
+        #             image=image, mask=mask
+        #         )
+        #         image = transformed["image"]
+        #         mask = transformed["mask"]
+        #     else:
+        #         image = (
+        #             torch.from_numpy(image.transpose(2, 0, 1)).float()
+        #             / 255.0
+        #         )
+        #         mask = torch.from_numpy(mask).long()
+        #
+        #     return {
+        #         "image": image,
+        #         "mask": mask,
+        #         "path": f"replay_buffer_{replay_idx}",
+        #     }
 
 
 # ==============================================================
@@ -368,7 +420,9 @@ def get_training_augmentation(config: Dict) -> A.Compose:
             std=[0.229, 0.224, 0.225],
         ),
         ToTensorV2(),
-    ])
+    ],
+    is_check_shapes=False,  # Disable strict shape checking for replay buffer compatibility
+    )
 
 def get_validation_augmentation(config: Dict) -> A.Compose:
     """
@@ -388,6 +442,7 @@ def get_validation_augmentation(config: Dict) -> A.Compose:
             ),
             ToTensorV2(),
         ],
+        is_check_shapes=False,  # Disable strict shape checking
         keypoint_params=None,
     )
 

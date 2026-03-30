@@ -11,7 +11,7 @@ data/tiles/
 !data/raw/README.txt
 
 # Model outputs
-outputs/
+#outputs/
 
 # Python
 __pycache__/

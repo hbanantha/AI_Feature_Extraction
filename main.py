@@ -73,7 +73,9 @@ def cmd_train(args):
     """Run training pipeline."""
     from src.training import train
 
-    train(args.config)
+    # train(args.config)
+    train(args.config, resume_checkpoint=args.resume)
+
     logger.info("Training complete!")
 
 
@@ -237,6 +239,13 @@ python main.py optimize --config configs/config.yaml \
         default="configs/config.yaml",
         help="Path to config file",
     )
+    train_parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume from"
+    )
+
     train_parser.set_defaults(func=cmd_train)
 
     # ------------------------------------------------------------------
