@@ -1,4 +1,4 @@
-# Configuration file for AI Feature Extraction from Drone Images
+# Configuration file for AI Feature Extraction from Drone Images (TPU v5e-1 - Colab)
 
 # -------------------------
 # DATA CONFIGURATION
@@ -6,20 +6,16 @@
 
 data:
 
-  # Input directories
-  raw_data_dir: "data/raw"            # Original TIFF files location
-  tiles_dir: "data/tiles"             # Processed tiles directory
-  annotations_dir: "data/annotations" # Annotation masks directory
+  raw_data_dir: "data/raw"
+  tiles_dir: "data/tiles"
+  annotations_dir: "data/annotations"
 
-  # Tile configuration
-  tile_size: 256        # Tile size (256 for low RAM, 512 for better context)
-  tile_overlap: 32      # Overlap between tiles (for seamless stitching)
-  min_valid_pixels: 0.7 # Minimum ratio of valid pixels in a tile
+  tile_size: 256
+  tile_overlap: 32
+  min_valid_pixels: 0.7
 
-  # Image channels
-  input_channels: 3     # RGB channels
+  input_channels: 3
 
-  # Class definitions
   segmentation_classes:
     0: "background"
     1: "building_rcc"
@@ -44,16 +40,14 @@ data:
 
 model:
 
-  # Segmentation model
   segmentation:
-    encoder_name: "mobilenet_v2"     # Lightweight encoder for low RAM
-    encoder_weights: "imagenet"     # Pretrained weights
-    decoder: "unet"                 # U-Net decoder
-    activation: null                # Use None for logits, 'softmax' for probabilities
+    encoder_name: "mobilenet_v2"
+    encoder_weights: "imagenet"
+    decoder: "unet"
+    activation: null
     in_channels: 3
-    classes: 7                      # Number of segmentation classes
+    classes: 7
 
-  # Object detection model (for transformers, tanks, wells)
   detection:
     model_name: "yolov5n"
     classes: 3
@@ -66,12 +60,12 @@ model:
 
 training:
 
-  # General settings
-  batch_size: 32                     # Increased from 24 for 16GB RAM (10-15% speedup)
-  num_workers: 6                    # Data loading workers
-  epochs_per_village_batch: 5      # Epochs per incremental training batch
-  max_epochs: 5                     # Reduced from 10 (50% time savings)
-  validation_frequency: 2           # Validate every 2 epochs (15% time savings)
+  batch_size: 8                    # TPU-safe batch size
+  num_workers: 0                  # MUST be 0 for TPU
+  epochs_per_village_batch: 8
+  max_epochs: 20
+  validation_frequency: 1
+  use_balanced_sampling: true
 
 
 # -------------------------
@@ -80,21 +74,14 @@ training:
 
 optimization:
 
-  learning_rate: 0.0001
-  weight_decay: 0.0001
-  lr_scheduler: "cosine"   # Options: cosine, step, plateau
-
-  # Optimizer
-  optimizer: "adamw"       # Options: adam, adamw, sgd
-
-  # Mixed precision for memory efficiency
-  use_amp: true            # Automatic Mixed Precision
-
-  # Gradient accumulation for effective larger batch
-  gradient_accumulation_steps: 1
-
-  # Early stopping
-  early_stopping_patience: 5
+  learning_rate: 0.0003
+  weight_decay: 0.00005
+  lr_scheduler: "cosine"
+  optimizer: "adamw"
+  use_amp: false                 # Disable AMP for TPU
+  gradient_accumulation_steps: 4 # Effective batch = 32
+  early_stopping_patience: 12
+  max_gradient_norm: 1.0
 
 
 # -------------------------
@@ -103,8 +90,9 @@ optimization:
 
 checkpointing:
 
-  checkpoint_dir: "D:/AI_Feature_Extraction/outputs/checkpoints"
+  checkpoint_dir: "/content/outputs/checkpoints"  # Colab-safe path
   save_best_only: true
+  save_frequency: 1            # Save every epoch (IMPORTANT for Colab)
 
 
 # -------------------------
@@ -114,10 +102,10 @@ checkpointing:
 incremental:
 
   enabled: true
-  villages_per_batch: 2      # Train on 2 villages at a time
-  use_ewc: true              # Elastic Weight Consolidation
-  ewc_lambda: 0.4            # EWC regularization strength
-  replay_buffer_size: 2000   # Increased from 1000 for better incremental learning (16GB RAM)
+  villages_per_batch: 1
+  use_ewc: false
+  ewc_lambda: 0.4
+  replay_buffer_size: 5000
 
 
 # -------------------------
@@ -130,13 +118,15 @@ augmentation:
     horizontal_flip: 0.5
     vertical_flip: 0.5
     rotate_90: 0.5
-    random_brightness_contrast: 0.3
-#    random_gamma: 0.3
-#    gaussian_blur: 0.2
-#    gaussian_noise: 0.2
+    random_brightness_contrast: 0.4
+    perspective_transform: 0.3
+    elastic_deformation: 0.2
+    random_rain: 0.1
+    gaussian_noise: 0.2
+    gaussian_blur: 0.2
 
   val:
-    normalize: true   # No augmentation for validation
+    normalize: true
 
 
 # -------------------------
@@ -145,17 +135,14 @@ augmentation:
 
 inference:
 
-  # Sliding window settings
   stride: 224
-  batch_size: 1       # Conservative for inference
+  batch_size: 2
 
-  # Post-processing
   confidence_threshold: 0.5
-  min_building_area: 25   # Minimum building area in pixels
-  min_road_length: 10     # Minimum road segment length
+  min_building_area: 25
+  min_road_length: 10
 
-  # Output
-  output_dir: "outputs/predictions"
+  output_dir: "/content/outputs/predictions"
   save_geotiff: true
   save_shapefile: true
 
@@ -166,9 +153,10 @@ inference:
 
 hardware:
 
-  device: "cpu"         # Change to "cuda" if GPU available
-  memory_limit_gb: 12   # Increased from 8 for 16GB RAM system
-  pin_memory: true      # Enabled for faster CPU→device transfers (5-8% speedup)
+  device: "xla"                 # TPU device
+  tpu_cores: 1                 # v5e-1 = single core
+  memory_limit_gb: 12
+  pin_memory: false
 
 
 # -------------------------
@@ -177,11 +165,11 @@ hardware:
 
 logging:
 
-  log_dir: "outputs/logs"
+  log_dir: "/content/outputs/logs"
   log_level: "INFO"
-  save_frequency: 100       # Log every N batches
+  save_frequency: 200
   visualize_predictions: true
-  visualization_dir: "outputs/visualizations"
+  visualization_dir: "/content/outputs/visualizations"
 
 
 # -------------------------
@@ -191,12 +179,11 @@ logging:
 evaluation:
 
   metrics:
-    - "iou"        # Intersection over Union
-    - "dice"       # Dice coefficient
+    - "iou"
+    - "dice"
     - "precision"
     - "recall"
     - "f1"
     - "accuracy"
 
-target_accuracy: 0.95    # Target 95% accuracy
-
+target_accuracy: 0.95

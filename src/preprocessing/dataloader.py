@@ -410,18 +410,48 @@ class ReplayBuffer:
 #         keypoint_params=None,
 #     )
 def get_training_augmentation(config: Dict) -> A.Compose:
+    """
+    Advanced augmentation pipeline for satellite imagery.
+    
+    Includes transformations that preserve structure while adding robustness:
+    - Geometric: Flips, rotations, perspective shifts
+    - Radiometric: Brightness, contrast, color shifts (simulate different sensors)
+    - Noise: Gaussian noise, blur (simulate atmospheric effects)
+    """
     return A.Compose([
+        # Geometric augmentations
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
-
+        A.Rotate(limit=45, p=0.3, border_mode=cv2.BORDER_REFLECT_101),
+        
+        # Perspective and elastic deformations (light)
+        A.Perspective(scale=(0.05, 0.1), p=0.3),
+        A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=0.2),
+        
+        # Radiometric augmentations (satellite-specific)
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        A.RandomGamma(gamma_limit=(80, 120), p=0.3),
+        A.CLAHE(clip_limit=2.0, p=0.3),  # Contrast Limited Adaptive Histogram Equalization
+        
+        # Color channel manipulations (simulate different bands/sensors)
+        A.RandomRain(p=0.1),  # Simulate atmospheric effects
+        A.GaussNoise(p=0.2),
+        
+        # Blur and edge-preserving filtering
+        A.OneOf([
+            A.GaussianBlur(blur_limit=3, p=1.0),
+            A.MedianBlur(blur_limit=3, p=1.0),
+        ], p=0.2),
+        
+        # Normalization
         A.Normalize(
-            mean=[0.485, 0.456, 0.406],
+            mean=[0.485, 0.456, 0.406],  # ImageNet statistics
             std=[0.229, 0.224, 0.225],
         ),
         ToTensorV2(),
     ],
-    is_check_shapes=False,  # Disable strict shape checking for replay buffer compatibility
+    is_check_shapes=False,  # For replay buffer compatibility
     )
 
 def get_validation_augmentation(config: Dict) -> A.Compose:

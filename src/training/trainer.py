@@ -27,8 +27,9 @@ from src.preprocessing import (
     get_training_augmentation,
     get_validation_augmentation
 )
-from src.training.losses import CombinedSegmentationLoss, EWCLoss
+from src.training.losses import CombinedSegmentationLoss, EWCLoss, get_class_weights
 from src.training.metrics import SegmentationMetrics
+from src.preprocessing.samplers import ClassBalancedSampler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -109,14 +110,72 @@ class IncrementalTrainer:
             T_max=self.max_epochs
         )
 
+        # Initialize loss function with class balancing
+        # Use "effective" method for long-tail distribution
+        num_classes = self.config["data"]["num_seg_classes"]
+        class_weights = None
+        
+        # Try to compute class weights from the dataset
+        try:
+            # Create dummy dataset to compute class frequencies
+            dummy_dataset = DroneImageDataset(
+                tiles_dir=self.config["data"]["tiles_dir"],
+                masks_dir=self.config["data"]["annotations_dir"],
+                transform=None,
+                is_training=True,
+                max_samples=500  # Sample subset for speed
+            )
+            
+            class_counts = self._compute_class_frequencies(dummy_dataset)
+            class_weights = get_class_weights(
+                class_counts,
+                num_classes,
+                method="effective"  # Recommended for imbalanced data
+            ).tolist()
+            
+            logger.info(f"Computed class weights: {class_weights}")
+        except Exception as e:
+            logger.warning(f"Could not compute class weights: {e}. Using uniform weights.")
+            class_weights = [1.0] * num_classes
+
         self.loss_fn = CombinedSegmentationLoss(
             ce_weight=0.5,
-            dice_weight=0.5,
-            use_focal=True
+            dice_weight=0.4,
+            lovasz_weight=0.1,  # Add Lovasz loss for boundary preservation
+            class_weights=class_weights,
+            use_focal=True,
+            use_label_smoothing=True,
+            label_smoothing=0.1
         )
 
         if self.use_ewc:
             self.ewc_loss = EWCLoss(self.model, lambda_ewc=self.ewc_lambda)
+
+    def _compute_class_frequencies(self, dataset: DroneImageDataset) -> dict:
+        """Compute class frequency distribution from dataset."""
+        from collections import Counter
+        
+        class_counts = Counter()
+        total_pixels = 0
+        
+        for idx in range(min(len(dataset), 500)):  # Sample for speed
+            try:
+                sample = dataset[idx]
+                mask = sample["mask"]
+                
+                if isinstance(mask, torch.Tensor):
+                    mask = mask.numpy()
+                
+                unique, counts = np.unique(mask, return_counts=True)
+                for cls, count in zip(unique, counts):
+                    class_counts[int(cls)] += count
+                    total_pixels += count
+            except Exception as e:
+                logger.debug(f"Error processing sample {idx}: {e}")
+                continue
+        
+        logger.info(f"Class distribution: {dict(class_counts)}")
+        return dict(class_counts)
 
     # -------------------------------------------------------- # --------------------------------------------------------
     #     # NEW: Resume from checkpoint
@@ -164,21 +223,50 @@ class IncrementalTrainer:
                 replay_ratio=0.2
             )
 
-        return DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=is_training,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            drop_last=is_training
-        )
+        # Use balanced sampler for training to prevent class collapse
+        if is_training:
+            sampler = ClassBalancedSampler(dataset)
+            return DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                sampler=sampler,
+                num_workers=self.num_workers,
+                pin_memory=True,
+                drop_last=is_training
+            )
+        else:
+            # Standard shuffled loader for validation
+            return DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=self.num_workers,
+                pin_memory=True,
+                drop_last=False
+            )
 
     # --------------------------------------------------------
 
     def train_epoch(self, loader: DataLoader):
+        """
+        Train for one epoch with class diversity monitoring.
+        
+        Key anti-collapse strategies:
+        1. Balanced sampling (via ClassBalancedSampler)
+        2. Class weighted loss (focal + dice + lovasz)
+        3. Per-class accuracy tracking
+        4. Early warning on class collapse
+        """
 
         self.model.train()
         total_loss = 0
+        loss_components = {"ce": 0, "dice": 0}
+        if hasattr(self.loss_fn, 'lovasz_weight') and self.loss_fn.lovasz_weight > 0:
+            loss_components["lovasz"] = 0
+        
+        # Track per-class predictions to detect collapse
+        class_predictions = {i: 0 for i in range(self.config["data"]["num_seg_classes"])}
+        total_predictions = 0
 
         self.optimizer.zero_grad()
 
@@ -200,6 +288,9 @@ class IncrementalTrainer:
                 self.scaler.scale(loss).backward()
 
                 if (step + 1) % self.gradient_accumulation_steps == 0:
+                    # Clip gradients to prevent explosion
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     self.optimizer.zero_grad()
@@ -215,15 +306,52 @@ class IncrementalTrainer:
                 loss.backward()
 
                 if (step + 1) % self.gradient_accumulation_steps == 0:
+                    # Clip gradients to prevent explosion
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
             total_loss += loss_dict["total"].item()
+            
+            # Track loss components
+            for key in loss_components.keys():
+                if key in loss_dict:
+                    loss_components[key] += loss_dict[key].item()
+            
+            # Track class predictions (from logits)
+            with torch.no_grad():
+                pred_classes = outputs.argmax(dim=1)  # (B, H, W)
+                unique_classes, counts = torch.unique(pred_classes, return_counts=True)
+                for cls, count in zip(unique_classes.cpu().numpy(), counts.cpu().numpy()):
+                    class_predictions[int(cls)] += int(count)
+                    total_predictions += int(count)
 
-            if step % 50 == 0:  # Reduced frequency: 10→50 for 5-10% speedup
+            if step % 50 == 0:
                 self._add_to_replay(batch)
 
-        return total_loss / len(loader)
+        # Compute epoch statistics
+        avg_loss = total_loss / len(loader)
+        
+        # Check for class collapse
+        if total_predictions > 0:
+            dominant_class_ratio = max(v / total_predictions for v in class_predictions.values())
+            logger.info(f"Epoch class distribution: {class_predictions}")
+            logger.info(f"Dominant class ratio: {dominant_class_ratio:.2%}")
+            
+            # Warning if collapse detected
+            if dominant_class_ratio > 0.95:
+                logger.warning(
+                    f"WARNING: Possible class collapse! "
+                    f"Dominant class: {dominant_class_ratio:.2%}. "
+                    f"Check loss weights and sampling."
+                )
+        
+        # Log loss components
+        for key in loss_components.keys():
+            avg_component = loss_components[key] / len(loader)
+            logger.debug(f"Epoch {self.current_epoch} {key}_loss: {avg_component:.4f}")
+
+        return avg_loss
 
     # --------------------------------------------------------
 

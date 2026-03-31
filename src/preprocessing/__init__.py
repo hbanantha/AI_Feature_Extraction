@@ -11,6 +11,11 @@ from .dataloader import (
     get_validation_augmentation,
     create_dataloaders,
 )
+from .samplers import (
+    ClassBalancedSampler,
+    StratifiedSampler,
+    create_balanced_dataloader,
+)
 
 __all__ = [
     "GeoTIFFTiler",
@@ -21,4 +26,7 @@ __all__ = [
     "get_training_augmentation",
     "get_validation_augmentation",
     "create_dataloaders",
+    "ClassBalancedSampler",
+    "StratifiedSampler",
+    "create_balanced_dataloader",
 ]

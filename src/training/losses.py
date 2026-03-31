@@ -10,6 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Optional, List
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -69,25 +72,33 @@ class FocalLoss(nn.Module):
     """
     Focal loss for handling class imbalance.
     Focuses on hard examples.
+    Enhanced version with per-class alpha weighting.
     """
 
     def __init__(
         self,
         alpha: float = 0.25,
         gamma: float = 2.0,
-        class_weights: Optional[torch.Tensor] = None
+        class_weights: Optional[torch.Tensor] = None,
+        per_class_alpha: bool = False
     ):
         super().__init__()
-        self.alpha = alpha
         self.gamma = gamma
         self.class_weights = class_weights
+        self.alpha = alpha
+        self.per_class_alpha = per_class_alpha
 
     def forward(
         self,
         pred: torch.Tensor,
         target: torch.Tensor
     ) -> torch.Tensor:
-
+        """
+        Args:
+            pred: Logits (B, C, H, W)
+            target: Ground truth (B, H, W)
+        """
+        # Get cross-entropy loss
         ce_loss = F.cross_entropy(
             pred,
             target,
@@ -96,10 +107,99 @@ class FocalLoss(nn.Module):
             reduction='none'
         )
 
-        pt = torch.exp(-ce_loss)
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        # Compute focal weight: (1 - pt)^gamma
+        # pt is the probability of the true class
+        p = torch.exp(-ce_loss)
+        focal_weight = (1.0 - p) ** self.gamma
+        
+        # Apply focal weighting
+        focal_loss = self.alpha * focal_weight * ce_loss
 
         return focal_loss.mean()
+
+
+
+
+# ============================================================
+# Lovasz Softmax Loss
+# ============================================================
+
+class LovaszSoftmax(nn.Module):
+    """
+    Lovasz-Softmax loss for semantic segmentation.
+    Better for boundary preservation and multi-class scenarios.
+    """
+
+    def __init__(
+        self,
+        class_weights: Optional[torch.Tensor] = None,
+        ignore_index: int = -1
+    ):
+        super().__init__()
+        self.class_weights = class_weights
+        self.ignore_index = ignore_index
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+            pred: Logits (B, C, H, W)
+            target: Ground truth (B, H, W)
+        """
+        return lovasz_softmax(pred, target, self.class_weights, self.ignore_index)
+
+
+def lovasz_softmax(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    class_weights: Optional[torch.Tensor] = None,
+    ignore_index: int = -1
+) -> torch.Tensor:
+    """Compute Lovasz softmax loss."""
+    B, C, H, W = pred.shape
+    
+    # Flatten spatial dimensions
+    pred_flat = pred.permute(0, 2, 3, 1).reshape(-1, C)
+    target_flat = target.reshape(-1)
+    
+    # Remove ignore_index
+    if ignore_index >= 0:
+        mask = target_flat != ignore_index
+        pred_flat = pred_flat[mask]
+        target_flat = target_flat[mask]
+    
+    # Per-class lovasz loss
+    total_loss = 0.0
+    for c in range(C):
+        target_binary = (target_flat == c).float()
+        pred_c = pred_flat[:, c]
+        
+        # Skip if no positive examples
+        if target_binary.sum() == 0:
+            continue
+        
+        # Sort predictions
+        sorted_pred, sort_idx = torch.sort(pred_c, descending=True)
+        sorted_target = target_binary[sort_idx]
+        
+        # Jaccard index
+        intersection = torch.cumsum(sorted_target, dim=0)
+        union = torch.arange(1, len(sorted_target) + 1, device=pred.device).float() + torch.sum(sorted_target) - intersection
+        jaccard = 1.0 - intersection.float() / union
+        
+        # Lovasz loss
+        loss_c = torch.mean(jaccard)
+        
+        # Apply class weight
+        if class_weights is not None and c < len(class_weights):
+            loss_c = loss_c * class_weights[c]
+        
+        total_loss = total_loss + loss_c
+    
+    return total_loss / max(C, 1.0)
 
 
 # ============================================================
@@ -108,49 +208,86 @@ class FocalLoss(nn.Module):
 
 class CombinedSegmentationLoss(nn.Module):
     """
-    Combined loss for segmentation:
-    - Cross-Entropy / Focal
-    - Dice
+    Combined loss for segmentation with:
+    - Focal Loss or Weighted Cross-Entropy
+    - Weighted Dice Loss
+    - Optional Label Smoothing
+    - Optional LovaszSoftmax
     """
 
     def __init__(
         self,
         ce_weight: float = 0.5,
         dice_weight: float = 0.5,
+        lovasz_weight: float = 0.0,  # Set to 0.3 for additional regularization
         class_weights: Optional[List[float]] = None,
-        use_focal: bool = True
+        use_focal: bool = True,
+        use_label_smoothing: bool = True,
+        label_smoothing: float = 0.1
     ):
         super().__init__()
 
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
+        self.lovasz_weight = lovasz_weight
+        self.use_label_smoothing = use_label_smoothing
+        self.label_smoothing = label_smoothing
 
         if class_weights is not None:
             class_weights = torch.tensor(class_weights, dtype=torch.float32)
+            # Ensure weights don't become too extreme (helps stability)
+            class_weights = torch.clamp(class_weights, min=0.1, max=10.0)
 
         if use_focal:
-            self.ce_loss = FocalLoss(class_weights=class_weights)
+            self.ce_loss = FocalLoss(
+                alpha=0.25,
+                gamma=2.0,
+                class_weights=class_weights
+            )
         else:
-            self.ce_loss = nn.CrossEntropyLoss(weight=class_weights)
+            self.ce_loss = nn.CrossEntropyLoss(
+                weight=class_weights,
+                label_smoothing=label_smoothing if use_label_smoothing else 0.0
+            )
 
         self.dice_loss = DiceLoss(class_weights=class_weights)
+        
+        # Optional Lovasz loss for better boundary handling
+        if lovasz_weight > 0:
+            self.lovasz_loss = LovaszSoftmax(class_weights=class_weights)
+        else:
+            self.lovasz_loss = None
 
     def forward(
         self,
         pred: torch.Tensor,
         target: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            pred: Model predictions (B, C, H, W)
+            target: Ground truth labels (B, H, W)
+        """
 
         ce = self.ce_loss(pred, target)
         dice = self.dice_loss(pred, target)
-
+        
         total = self.ce_weight * ce + self.dice_weight * dice
-
-        return {
+        
+        results = {
             "total": total,
             "ce": ce,
             "dice": dice
         }
+        
+        # Add Lovasz loss if enabled
+        if self.lovasz_loss is not None:
+            lovasz = self.lovasz_loss(pred, target)
+            total = total + self.lovasz_weight * lovasz
+            results["lovasz"] = lovasz
+            results["total"] = total
+
+        return results
 
 
 # ============================================================
@@ -287,24 +424,52 @@ class EWCLoss(nn.Module):
 def get_class_weights(
     class_counts: Dict[int, int],
     num_classes: int,
-    method: str = "inverse"
+    method: str = "effective"
 ) -> torch.Tensor:
-
+    """
+    Calculate class weights to handle imbalance.
+    
+    Methods:
+    - "inverse": Simple inverse frequency weighting
+    - "sqrt_inverse": Square root of inverse frequency (less aggressive)
+    - "effective": Effective number of samples (best for imbalanced datasets)
+    - "binary": Binary cross-entropy style weighting
+    """
     total = sum(class_counts.values())
-    weights = torch.zeros(num_classes)
+    weights = torch.ones(num_classes)
 
-    for cls, count in class_counts.items():
-        if count > 0:
-            if method == "inverse":
-                weights[cls] = total / count
-            elif method == "sqrt_inverse":
-                weights[cls] = np.sqrt(total / count)
-            elif method == "effective":
-                beta = 0.999
-                effective_num = 1.0 - np.power(beta, count)
+    for cls in range(num_classes):
+        count = class_counts.get(cls, 0)
+        
+        if count == 0:
+            # Unseen class - use average weight
+            weights[cls] = 1.0
+        elif method == "inverse":
+            # Simple inverse frequency
+            weights[cls] = total / (count * num_classes)
+        elif method == "sqrt_inverse":
+            # Less aggressive than inverse
+            weights[cls] = np.sqrt(total / (count * num_classes))
+        elif method == "effective":
+            # Effective number of samples (recommended)
+            # Handles long-tail distribution better
+            beta = 0.999
+            effective_num = 1.0 - np.power(beta, count)
+            if effective_num > 0:
                 weights[cls] = (1.0 - beta) / effective_num
+            else:
+                weights[cls] = 1.0
+        elif method == "binary":
+            # Binary cross-entropy style
+            weights[cls] = total / (2 * count)
 
+    # Normalize to sum to num_classes (for stability)
     weights = weights / weights.sum() * num_classes
+    
+    # Clamp to prevent extreme values
+    weights = torch.clamp(weights, min=0.1, max=10.0)
+    
+    logger.info(f"Class weights ({method}): {weights.tolist()}")
     return weights
 
 
