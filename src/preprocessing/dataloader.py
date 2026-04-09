@@ -39,17 +39,21 @@ class DroneImageDataset(Dataset):
         load_to_memory: bool = False,
         max_samples: Optional[int] = None,
         village_names: Optional[List[str]] = None,
+        split_ratio: float = 0.8,
+        split_seed: int = 42,
     ):
         self.tiles_dir = Path(tiles_dir)
         self.masks_dir = Path(masks_dir) if masks_dir else None
         self.transform = transform
         self.is_training = is_training
         self.load_to_memory = load_to_memory
-
+        self.split_ratio = split_ratio
+        self.split_seed = split_seed
         self.tile_paths: List[Path] = []
         self.mask_paths: List[Optional[Path]] = []
 
         self._collect_tiles(village_names, max_samples)
+        self._apply_train_val_split()
 
         self.cached_data = None
         if load_to_memory:
@@ -75,7 +79,7 @@ class DroneImageDataset(Dataset):
             villages_to_process = (
                 potential_villages if potential_villages else [self.tiles_dir]
             )
-
+        logger.info(f"is_training = {self.is_training}")
         for village_dir in villages_to_process:
             tiles_subdir = (
                 village_dir / "tiles"
@@ -89,17 +93,87 @@ class DroneImageDataset(Dataset):
                     if max_samples and len(self.tile_paths) >= max_samples:
                         return
 
-                    self.tile_paths.append(tile_path)
+                    mask_path = None
 
                     if self.masks_dir:
-                        self.mask_map = {}
-                        for mask_file in self.masks_dir.rglob("*"):
-                            self.mask_map[mask_file.stem] = mask_file
-                        mask_path = self.mask_map.get(tile_path)
-                        # mask_path = self._find_mask_path(
-                        #     tile_path, village_dir.name
-                        # )
+                        # Build mask map only once (IMPORTANT optimization)
+                        if not hasattr(self, "mask_map"):
+                            self.mask_map = {
+                                m.stem: m for m in self.masks_dir.rglob("*")
+                            }
+
+                        mask_path = self.mask_map.get(tile_path.stem)
+
+                    # 🔥 LOAD MASK FOR FILTERING
+                    keep = True
+
+                    if mask_path is not None:
+                        try:
+                            if mask_path.suffix == ".npy":
+                                mask = np.load(mask_path)
+                            else:
+                                mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+                            if np.any(mask > 0):
+                                keep = True
+                            else:
+                                # Keep a small percentage of background tiles
+                                keep = np.random.rand() < 0.15
+
+                        except Exception:
+                            logger.debug(f"Skipping corrupted mask: {mask_path}")
+                            keep = False
+
+                    # ✅ FINAL ADD
+                    if keep:
+                        self.tile_paths.append(tile_path)
                         self.mask_paths.append(mask_path)
+
+            logger.info(f"Final tiles after filtering: {len(self.tile_paths)}")
+
+    def _apply_train_val_split(self):
+        """
+        Apply train-validation split after filtering.
+        Splitting is performed on tile_paths and mask_paths.
+        Ensures no overlap between training and validation datasets.
+        """
+        if self.split_ratio is None:
+            logger.info("Tile splitting disabled.")
+            return
+
+        if not (0.0 < self.split_ratio < 1.0):
+            logger.warning(f"Invalid split_ratio: {self.split_ratio}")
+            return
+
+        total_tiles = len(self.tile_paths)
+
+        if total_tiles == 0:
+            logger.warning("No tiles available for splitting.")
+            return
+
+        import random
+        random.seed(self.split_seed)
+
+        indices = list(range(total_tiles))
+        random.shuffle(indices)
+
+        split_idx = int(total_tiles * self.split_ratio)
+
+        if self.is_training:
+            selected_indices = indices[:split_idx]
+            split_type = "Training"
+        else:
+            selected_indices = indices[split_idx:]
+            split_type = "Validation"
+
+        # Apply split
+        self.tile_paths = [self.tile_paths[i] for i in selected_indices]
+        self.mask_paths = [self.mask_paths[i] for i in selected_indices]
+
+        logger.info(
+            f"{split_type} split applied: {len(self.tile_paths)} tiles "
+            f"(split_ratio={self.split_ratio})"
+        )
 
     def _find_mask_path(
         self, tile_path: Path, village_name: str
@@ -427,7 +501,7 @@ def get_training_augmentation(config: Dict) -> A.Compose:
         
         # Perspective and elastic deformations (light)
         A.Perspective(scale=(0.05, 0.1), p=0.3),
-        A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=0.2),
+        A.ElasticTransform(alpha=1, sigma=50, p=0.2),
         
         # Radiometric augmentations (satellite-specific)
         A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
@@ -497,7 +571,7 @@ def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
         masks_dir=config["data"].get("annotations_dir"),
         transform=train_transform,
         is_training=True,
-        load_to_memory=True
+        load_to_memory=False #True for GPU
     )
     
     val_dataset = DroneImageDataset(

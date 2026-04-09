@@ -80,6 +80,17 @@ def cmd_train(args):
 
 
 # -------------------------------------------------------------------------
+# Evaluation Command
+# -------------------------------------------------------------------------
+def cmd_evaluate(args):
+    from src.evaluation.evaluator import run_evaluation
+
+    run_evaluation(
+        args.config,
+        args.model,
+        args.output,
+    )
+# -------------------------------------------------------------------------
 # Inference Command
 # -------------------------------------------------------------------------
 def cmd_inference(args):
@@ -118,56 +129,56 @@ def cmd_optimize(args):
 # -------------------------------------------------------------------------
 # Evaluate Command
 # -------------------------------------------------------------------------
-def cmd_evaluate(args):
-    """Run model evaluation."""
-    from src.training import SegmentationMetrics
-    from src.models import load_model
-    from src.preprocessing import (
-        DroneImageDataset,
-        get_validation_augmentation,
-    )
-    from torch.utils.data import DataLoader
-    import torch
-
-    config = load_config(args.config)
-
-    # Load model
-    model = load_model(args.model, config, device="cpu")
-    model.eval()
-
-    # Create validation dataset
-    transform = get_validation_augmentation(config)
-
-    dataset = DroneImageDataset(
-        tiles_dir=args.data_dir,
-        masks_dir=args.masks_dir,
-        transform=transform,
-        is_training=False,
-    )
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=config["training"]["batch_size"],
-        shuffle=False,
-        num_workers=config["training"]["num_workers"],
-    )
-
-    # Metrics
-    metrics = SegmentationMetrics(
-        num_classes=config["data"]["num_seg_classes"],
-        class_names=list(config["data"]["segmentation_classes"].values()),
-    )
-
-    # Evaluation Loop
-    with torch.no_grad():
-        for batch in dataloader:
-            images = batch["image"]
-            masks = batch["mask"]
-
-            outputs = model(images)
-            metrics.update(outputs, masks)
-
-    metrics.print_report()
+# def cmd_evaluate(args):
+#     """Run model evaluation."""
+#     from src.training import SegmentationMetrics
+#     from src.models import load_model
+#     from src.preprocessing import (
+#         DroneImageDataset,
+#         get_validation_augmentation,
+#     )
+#     from torch.utils.data import DataLoader
+#     import torch
+#
+#     config = load_config(args.config)
+#
+#     # Load model
+#     model = load_model(args.model, config, device="cpu")
+#     model.eval()
+#
+#     # Create validation dataset
+#     transform = get_validation_augmentation(config)
+#
+#     dataset = DroneImageDataset(
+#         tiles_dir=args.data_dir,
+#         masks_dir=args.masks_dir,
+#         transform=transform,
+#         is_training=False,
+#     )
+#
+#     dataloader = DataLoader(
+#         dataset,
+#         batch_size=config["training"]["batch_size"],
+#         shuffle=False,
+#         num_workers=config["training"]["num_workers"],
+#     )
+#
+#     # Metrics
+#     metrics = SegmentationMetrics(
+#         num_classes=config["data"]["num_seg_classes"],
+#         class_names=list(config["data"]["segmentation_classes"].values()),
+#     )
+#
+#     # Evaluation Loop
+#     with torch.no_grad():
+#         for batch in dataloader:
+#             images = batch["image"]
+#             masks = batch["mask"]
+#
+#             outputs = model(images)
+#             metrics.update(outputs, masks)
+#
+#     metrics.print_report()
 
 
 # -------------------------------------------------------------------------
@@ -193,6 +204,10 @@ python main.py preprocess --config configs/config.yaml \
 
 # Train the model
 python main.py train --config configs/config.yaml
+
+# Run Evaluation
+python main.py evaluate --config configs/config.yaml \
+    --model outputs/checkpoints/best_model.pth
 
 # Run inference
 python main.py inference --config configs/config.yaml \
@@ -249,6 +264,24 @@ python main.py optimize --config configs/config.yaml \
     train_parser.set_defaults(func=cmd_train)
 
     # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+    parser_eval = subparsers.add_parser(
+        "evaluate", help="Evaluate trained model"
+    )
+    parser_eval.add_argument(
+        "--config", required=True, help="Path to config file"
+    )
+    parser_eval.add_argument(
+        "--model", required=True, help="Path to trained model"
+    )
+    parser_eval.add_argument(
+        "--output",
+        default="outputs/evaluation/evaluation_metrics.json",
+        help="Output metrics file",
+    )
+    parser_eval.set_defaults(func=cmd_evaluate)
+    # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
     inference_parser = subparsers.add_parser(
@@ -303,25 +336,25 @@ python main.py optimize --config configs/config.yaml \
     # ------------------------------------------------------------------
     # Evaluate
     # ------------------------------------------------------------------
-    evaluate_parser = subparsers.add_parser(
-        "evaluate", help="Evaluate model performance"
-    )
-    evaluate_parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/config.yaml",
-        help="Path to config file",
-    )
-    evaluate_parser.add_argument(
-        "--model", type=str, required=True, help="Model checkpoint path"
-    )
-    evaluate_parser.add_argument(
-        "--data-dir", type=str, required=True, help="Directory with test tiles"
-    )
-    evaluate_parser.add_argument(
-        "--masks-dir", type=str, required=True, help="Directory with ground truth masks"
-    )
-    evaluate_parser.set_defaults(func=cmd_evaluate)
+    # evaluate_parser = subparsers.add_parser(
+    #     "evaluate", help="Evaluate model performance"
+    # )
+    # evaluate_parser.add_argument(
+    #     "--config",
+    #     type=str,
+    #     default="configs/config.yaml",
+    #     help="Path to config file",
+    # )
+    # evaluate_parser.add_argument(
+    #     "--model", type=str, required=True, help="Model checkpoint path"
+    # )
+    # evaluate_parser.add_argument(
+    #     "--data-dir", type=str, required=True, help="Directory with test tiles"
+    # )
+    # evaluate_parser.add_argument(
+    #     "--masks-dir", type=str, required=True, help="Directory with ground truth masks"
+    # )
+    # evaluate_parser.set_defaults(func=cmd_evaluate)
 
     # ------------------------------------------------------------------
     # Parse Arguments

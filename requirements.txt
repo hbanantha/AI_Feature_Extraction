@@ -35,3 +35,4 @@ memory-profiler>=0.61.0
 
 # Optional: For annotation (install separately if needed)
 # label-studio>=1.9.0
+scikit-learn>=1.8.0

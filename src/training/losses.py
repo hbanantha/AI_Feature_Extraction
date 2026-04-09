@@ -247,7 +247,8 @@ class CombinedSegmentationLoss(nn.Module):
         else:
             self.ce_loss = nn.CrossEntropyLoss(
                 weight=class_weights,
-                label_smoothing=label_smoothing if use_label_smoothing else 0.0
+                label_smoothing=label_smoothing if use_label_smoothing else 0.0,
+                ignore_index=0
             )
 
         self.dice_loss = DiceLoss(class_weights=class_weights)

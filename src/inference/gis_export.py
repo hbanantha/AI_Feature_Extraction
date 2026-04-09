@@ -164,15 +164,37 @@ class GISExporter:
         # Apply morphological closing to fill small holes
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         for class_idx in np.unique(predictions):
-            if class_idx == 0:  # Skip background
+            if class_idx == 0:
                 continue
 
             mask = (predictions == class_idx).astype(np.uint8)
-            
-            # Morphological operations
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-            
+
+            # -------------------------------
+            #  SPECIAL HANDLING FOR ROADS
+            # -------------------------------
+            if class_idx == 5:  # road
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+                mask = cv2.dilate(mask, kernel, iterations=1)
+
+            # -------------------------------
+            #  WATER SMOOTHING
+            # -------------------------------
+            elif class_idx == 6:  # waterbody
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+            # -------------------------------
+            #  BUILDINGS CLEANING
+            # -------------------------------
+            else:  # buildings
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+            # Final smoothing
+            mask = cv2.medianBlur(mask, 5)
+
             cleaned[mask > 0] = class_idx
 
         return cleaned
@@ -210,12 +232,44 @@ class GISExporter:
                 if value == 1:
                     polygon = shape(geom)
 
-                    # Validate polygon
+                    # -------------------------------
+                    #  STEP 1: Fix invalid geometry
+                    # -------------------------------
                     if not polygon.is_valid:
                         polygon = polygon.buffer(0)
 
-                    # Skip invalid or empty geometries
                     if polygon.is_empty or polygon.area == 0:
+                        continue
+
+                    # -------------------------------
+                    #  STEP 2: Remove tiny noise early
+                    # -------------------------------
+                    if polygon.area < (self.min_polygon_area * 0.3):
+                        continue
+
+                    # -------------------------------
+                    #  STEP 3: Smooth edges
+                    # -------------------------------
+                    polygon = polygon.buffer(1)
+                    polygon = polygon.simplify(1.5, preserve_topology=True)
+                    polygon = polygon.buffer(-1)
+
+                    # -------------------------------
+                    #  STEP 4: Remove small holes
+                    # -------------------------------
+                    if polygon.geom_type == "Polygon":
+                        polygon = Polygon(
+                            polygon.exterior,
+                            [hole for hole in polygon.interiors if Polygon(hole).area > self.min_polygon_area]
+                        )
+
+                    # -------------------------------
+                    #  STEP 5: Final validity check
+                    # -------------------------------
+                    if not polygon.is_valid:
+                        polygon = polygon.buffer(0)
+
+                    if polygon.is_empty:
                         continue
 
                     # Apply area/length filters
@@ -244,7 +298,21 @@ class GISExporter:
             geometry=geometries,
             crs=self.crs
         )
+        try:
+            merged = gdf.unary_union
 
+            if merged.geom_type == "MultiPolygon":
+                geometries = list(merged.geoms)
+            else:
+                geometries = [merged]
+
+            gdf = gpd.GeoDataFrame(
+                geometry=geometries,
+                crs=self.crs
+            )
+
+        except Exception as e:
+            logger.warning(f"Merge failed: {e}")
         logger.info(f"Extracted {len(gdf)} geometries for {class_name}")
         return gdf
 

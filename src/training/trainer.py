@@ -54,6 +54,7 @@ class IncrementalTrainer:
         self.lr = config["optimization"]["learning_rate"]
         self.gradient_accumulation_steps = config["optimization"]["gradient_accumulation_steps"]
         self.validation_frequency = config["training"].get("validation_frequency", 1)  # Validate every N epochs
+        self.class_counts = None
 
         # Mixed precision
         self.use_amp = config["optimization"]["use_amp"] and self.device == "cuda"
@@ -62,7 +63,7 @@ class IncrementalTrainer:
         # Incremental
         inc_cfg = config["incremental"]
         self.use_ewc = inc_cfg["use_ewc"]
-        self.ewc_lambda = inc_cfg["ewc_lambda"]
+        self.ewc_lambda = inc_cfg.get("ewc_lambda", 0.4)
         self.villages_per_batch = inc_cfg["villages_per_batch"]
         self.replay_buffer_size = inc_cfg["replay_buffer_size"]
 
@@ -123,15 +124,21 @@ class IncrementalTrainer:
                 masks_dir=self.config["data"]["annotations_dir"],
                 transform=None,
                 is_training=True,
-                max_samples=500  # Sample subset for speed
+                # max_samples=500  # Sample subset for speed
             )
-            
-            class_counts = self._compute_class_frequencies(dummy_dataset)
+
+            self.class_counts = self._compute_class_frequencies(dummy_dataset)
+            class_counts = self.class_counts
             class_weights = get_class_weights(
                 class_counts,
                 num_classes,
                 method="effective"  # Recommended for imbalanced data
             ).tolist()
+            class_weights[0] = class_weights[0] * 0.2  # or even 0.1
+
+            # Optional: boost rare classes
+            for i in range(1, len(class_weights)):
+                class_weights[i] = max(class_weights[i], 0.5)
             
             logger.info(f"Computed class weights: {class_weights}")
         except Exception as e:
@@ -208,12 +215,20 @@ class IncrementalTrainer:
             get_validation_augmentation(self.config)
         )
 
+        # Apply tile-based split only when a single village is available
+        if len(villages) == 1:
+            split_ratio = self.config["data"].get("train_val_split", 0.8)
+        else:
+            split_ratio = None
+
         dataset = DroneImageDataset(
             tiles_dir=self.config["data"]["tiles_dir"],
             masks_dir=self.config["data"]["annotations_dir"],
             transform=transform,
             is_training=is_training,
-            village_names=villages
+            village_names=villages,
+            split_ratio=split_ratio,
+            split_seed=self.config["data"].get("split_seed", 42),
         )
 
         if use_replay and is_training and len(self.replay_buffer) > 0:
@@ -225,7 +240,7 @@ class IncrementalTrainer:
 
         # Use balanced sampler for training to prevent class collapse
         if is_training:
-            sampler = ClassBalancedSampler(dataset)
+            sampler = ClassBalancedSampler(dataset, class_counts=self.class_counts)
             return DataLoader(
                 dataset,
                 batch_size=self.batch_size,
@@ -401,6 +416,13 @@ class IncrementalTrainer:
             is_training=False
         )
 
+        logger.info(f"Train villages: {train_villages}")
+        logger.info(f"Validation villages: {val_villages}")
+        logger.info(f"Train dataset size: {len(train_loader.dataset)}")
+        logger.info(f"Validation dataset size: {len(val_loader.dataset)}")
+        logger.info(f"Train steps per epoch: {len(train_loader)}")
+        logger.info(f"Validation steps: {len(val_loader)}")
+
         best_batch_miou = 0
         patience = self.config["optimization"]["early_stopping_patience"]
         patience_counter = 0
@@ -419,6 +441,17 @@ class IncrementalTrainer:
             else:
                 # Skip validation, use dummy metrics to avoid checkpoint saving
                 val_metrics = {"mIoU": 0.0, "val_loss": 0.0}
+
+            # Log training history
+            if should_validate:
+                history_entry = {
+                    "epoch": self.current_epoch,
+                    "batch_idx": batch_idx,
+                    "train_loss": float(train_loss),
+                    "val_loss": float(val_metrics.get("val_loss", 0.0)),
+                    "mIoU": float(val_metrics.get("mIoU", 0.0)),
+                }
+                self.training_history.append(history_entry)
 
             if should_validate:  # Only step scheduler on validation epochs (3-5% speedup)
                 self.scheduler.step()
@@ -467,8 +500,13 @@ class IncrementalTrainer:
 
         val_ratio = 0.2
         n_val = max(1, int(len(villages) * val_ratio))
-        val_villages = villages[-n_val:]
-        train_villages = villages[:-n_val]
+        if len(villages) <= 1:
+            train_villages = villages
+            val_villages = villages  # reuse same for validation (OK for testing)
+        else:
+            n_val = max(1, int(len(villages) * val_ratio))
+            val_villages = villages[-n_val:]
+            train_villages = villages[:-n_val]
 
         num_batches = (len(train_villages) + self.villages_per_batch - 1) // self.villages_per_batch
 
@@ -551,7 +589,7 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     if not villages:
         logger.error("No villages found.")
         return
-
+    print(villages)
     trainer = IncrementalTrainer(config)
     trainer.train_incremental(villages, resume_checkpoint)
 ### CHANGE END

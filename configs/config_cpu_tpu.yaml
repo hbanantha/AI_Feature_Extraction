@@ -6,8 +6,6 @@ data:
   raw_data_dir: "data/raw"
   tiles_dir: "data/tiles"
   annotations_dir: "data/annotations"
-  train_val_split: 0.8
-  split_seed: 42
 
   tile_size: 256
   tile_overlap: 32
@@ -49,7 +47,7 @@ model:
 
 
 training:
-  batch_size: 8                # Reduced for RAM safety
+  batch_size: 2                # Reduced for RAM safety
   num_workers: 4               # Safe for Windows
   epochs_per_village_batch: 3 #6–8 for full, 10–15 for full , actual epoch = epochs_per_village_batch × number_of_batches \
   #number of batches = total_villages / villages_per_batch
@@ -65,7 +63,7 @@ optimization:
   optimizer: "adamw"
   use_amp: false                # USE if GPU available
   gradient_accumulation_steps: 2
-  early_stopping_patience: 1
+  early_stopping_patience: 8
   max_gradient_norm: 1.0
 
 
@@ -119,6 +117,134 @@ logging:
   save_frequency: 200
   visualize_predictions: true
   visualization_dir: "outputs/visualizations"
+
+
+evaluation:
+  metrics: ["iou", "dice", "precision", "recall", "f1", "accuracy"]
+
+target_accuracy: 0.95
+
+# =========================
+# TPU v5e-1 (Colab) CONFIG
+# =========================
+
+data:
+  raw_data_dir: "/content/data/raw"
+  tiles_dir: "/content/data/tiles"
+  annotations_dir: "/content/data/annotations"
+
+  tile_size: 256
+  tile_overlap: 32
+  min_valid_pixels: 0.7
+
+  input_channels: 3
+
+  segmentation_classes:
+    0: "background"
+    1: "building_rcc"
+    2: "building_tiled"
+    3: "building_tin"
+    4: "building_others"
+    5: "road"
+    6: "waterbody"
+
+  detection_classes:
+    0: "distribution_transformer"
+    1: "overhead_tank"
+    2: "well"
+
+  num_seg_classes: 7
+  num_det_classes: 3
+
+
+model:
+  segmentation:
+    encoder_name: "mobilenet_v2"
+    encoder_weights: "imagenet"
+    decoder: "unet"
+    activation: null
+    in_channels: 3
+    classes: 7
+
+  detection:
+    model_name: "yolov5n"
+    classes: 3
+    pretrained: true
+
+
+training:
+  batch_size: 8
+  num_workers: 0                # MUST for TPU
+  epochs_per_village_batch: 8
+  max_epochs: 20
+  validation_frequency: 1
+  use_balanced_sampling: true
+
+
+optimization:
+  learning_rate: 0.0003
+  weight_decay: 0.00005
+  lr_scheduler: "cosine"
+  optimizer: "adamw"
+  use_amp: false               # TPU doesn't use AMP
+  gradient_accumulation_steps: 4
+  early_stopping_patience: 12
+  max_gradient_norm: 1.0
+
+
+checkpointing:
+  checkpoint_dir: "/content/outputs/checkpoints"
+  save_best_only: true
+  save_frequency: 1
+
+
+incremental:
+  enabled: true
+  villages_per_batch: 1
+  use_ewc: false
+  ewc_lambda: 0.4
+  replay_buffer_size: 5000
+
+
+augmentation:
+  train:
+    horizontal_flip: 0.5
+    vertical_flip: 0.5
+    rotate_90: 0.5
+    random_brightness_contrast: 0.4
+    perspective_transform: 0.3
+    elastic_deformation: 0.2
+    gaussian_noise: 0.2
+
+  val:
+    normalize: true
+
+
+inference:
+  stride: 224
+  batch_size: 4
+
+  confidence_threshold: 0.5
+  min_building_area: 25
+  min_road_length: 10
+
+  output_dir: "/content/outputs/predictions"
+  save_geotiff: true
+  save_shapefile: true
+
+
+hardware:
+  device: "xla"
+  tpu_cores: 1
+  pin_memory: false
+
+
+logging:
+  log_dir: "/content/outputs/logs"
+  log_level: "INFO"
+  save_frequency: 200
+  visualize_predictions: true
+  visualization_dir: "/content/outputs/visualizations"
 
 
 evaluation:

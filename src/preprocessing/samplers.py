@@ -27,7 +27,8 @@ class ClassBalancedSampler(Sampler):
         dataset: Dataset,
         num_samples: Optional[int] = None,
         replacement: bool = True,
-        class_weights: Optional[List[float]] = None
+        class_weights: Optional[List[float]] = None,
+        class_counts=None
     ):
         """
         Args:
@@ -39,7 +40,12 @@ class ClassBalancedSampler(Sampler):
         self.dataset = dataset
         self.num_samples = num_samples or len(dataset)
         self.replacement = replacement
-
+        if class_counts is not None:
+            self.class_counts = class_counts
+        else:
+            raise ValueError(
+                "class_counts must be provided to avoid recomputation."
+            )
         # Compute class frequencies from masks
         if class_weights is None:
             self.class_weights = self._compute_class_weights()
