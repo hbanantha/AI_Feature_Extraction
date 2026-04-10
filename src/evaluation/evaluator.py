@@ -76,10 +76,10 @@ class SegmentationEvaluator:
 
         # Load model
         self.model = create_model(config)
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
 
-        if "model_state_dict" in checkpoint:
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+        if "model" in checkpoint:
+            self.model.load_state_dict(checkpoint["model"])
         else:
             self.model.load_state_dict(checkpoint)
 

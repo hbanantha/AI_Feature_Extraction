@@ -6,6 +6,8 @@ data:
   raw_data_dir: "data/raw"
   tiles_dir: "data/tiles"
   annotations_dir: "data/annotations"
+  train_val_split: 0.8
+  split_seed: 42
 
   tile_size: 256
   tile_overlap: 32
@@ -47,7 +49,7 @@ model:
 
 
 training:
-  batch_size: 2                # Reduced for RAM safety
+  batch_size: 8                # Reduced for RAM safety
   num_workers: 4               # Safe for Windows
   epochs_per_village_batch: 3 #6–8 for full, 10–15 for full , actual epoch = epochs_per_village_batch × number_of_batches \
   #number of batches = total_villages / villages_per_batch
@@ -63,7 +65,7 @@ optimization:
   optimizer: "adamw"
   use_amp: false                # USE if GPU available
   gradient_accumulation_steps: 2
-  early_stopping_patience: 8
+  early_stopping_patience: 1
   max_gradient_norm: 1.0
 
 

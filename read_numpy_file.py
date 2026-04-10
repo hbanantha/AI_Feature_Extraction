@@ -1,8 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-tile_path = "data/tiles/Badetumnar/tiles/tile_0010_0029.npy"
-mask_path = "data/annotations/Badetumnar/masks/tile_0010_0029.npy"
+tile_path = "data/tiles/Badetumnar/tiles/tile_0022_0024.npy"
+mask_path = "data/annotations/Badetumnar/masks/tile_0022_0024.npy"
 
 tile = np.load(tile_path)
 mask = np.load(mask_path)
