@@ -174,7 +174,7 @@ class GeoTIFFTiler:
                 self.check_memory()
 
                 try:
-                    tile = src.read(window=window)
+                    tile = src.read([1, 2, 3], window=window)
                     tile = np.transpose(tile, (1, 2, 0))
 
                     if tile.shape[2] > 3:

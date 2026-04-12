@@ -55,7 +55,7 @@ def cmd_preprocess(args):
         # Process all files in directory
         processor = BatchTileProcessor(
             tiler,
-            villages_per_batch=config["training"]["incremental"]["villages_per_batch"],
+            villages_per_batch=config["incremental"]["villages_per_batch"],
         )
         processor.process_all_villages(args.input_dir, args.output_dir)
 

@@ -190,7 +190,7 @@ optimization:
   optimizer: "adamw"
   use_amp: false               # TPU doesn't use AMP
   gradient_accumulation_steps: 4
-  early_stopping_patience: 12
+  early_stopping_patience: 2
   max_gradient_norm: 1.0
 
 

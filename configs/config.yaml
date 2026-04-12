@@ -111,6 +111,7 @@ inference:
 hardware:
   device: "cpu"               # fallback handled in code
   pin_memory: true
+  memory_limit_gb: 12
 
 
 logging:
