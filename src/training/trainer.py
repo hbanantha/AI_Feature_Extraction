@@ -34,7 +34,29 @@ from src.preprocessing.samplers import ClassBalancedSampler
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_valid_villages(tiles_dir: str) -> List[str]:
+    """
+    Returns a sorted list of valid village directories from tiles_dir.
+    Excludes non-village folders such as raw, annotations, and cache files.
+    """
+    exclude_dirs = {
+        "raw",
+        "annotations",
+        "masks",
+        "__pycache__",
+        ".ipynb_checkpoints"
+    }
 
+    tiles_path = Path(tiles_dir)
+
+    villages = [
+        d.name for d in tiles_path.iterdir()
+        if d.is_dir() and d.name not in exclude_dirs
+    ]
+
+    villages.sort()
+    logger.info(f"Detected villages: {villages}")
+    return villages
 # ============================================================
 # Incremental Trainer
 # ============================================================
@@ -115,7 +137,7 @@ class IncrementalTrainer:
         # Use "effective" method for long-tail distribution
         num_classes = self.config["data"]["num_seg_classes"]
         class_weights = None
-        
+
         # Try to compute class weights from the dataset (fast mode: smaller sample)
         try:
             # Create dummy dataset to compute class frequencies (reduced sample for speed)
@@ -124,7 +146,7 @@ class IncrementalTrainer:
                 masks_dir=self.config["data"]["annotations_dir"],
                 transform=None,
                 is_training=True,
-                max_samples=200  # OPTIMIZATION: Reduced from 500 for faster initialization
+                max_samples=1000  # OPTIMIZATION: Reduced from 500 for faster initialization
             )
 
             self.class_counts = self._compute_class_frequencies(dummy_dataset)
@@ -139,7 +161,7 @@ class IncrementalTrainer:
             # Optional: boost rare classes
             for i in range(1, len(class_weights)):
                 class_weights[i] = max(class_weights[i], 0.5)
-            
+
             logger.info(f"Computed class weights: {class_weights}")
         except Exception as e:
             logger.warning(f"Could not compute class weights: {e}. Using uniform weights.")
@@ -161,18 +183,18 @@ class IncrementalTrainer:
     def _compute_class_frequencies(self, dataset: DroneImageDataset) -> dict:
         """Compute class frequency distribution from dataset."""
         from collections import Counter
-        
+
         class_counts = Counter()
         total_pixels = 0
-        
+
         for idx in range(min(len(dataset), 500)):  # Sample for speed
             try:
                 sample = dataset[idx]
                 mask = sample["mask"]
-                
+
                 if isinstance(mask, torch.Tensor):
                     mask = mask.numpy()
-                
+
                 unique, counts = np.unique(mask, return_counts=True)
                 for cls, count in zip(unique, counts):
                     class_counts[int(cls)] += count
@@ -180,7 +202,7 @@ class IncrementalTrainer:
             except Exception as e:
                 logger.debug(f"Error processing sample {idx}: {e}")
                 continue
-        
+
         logger.info(f"Class distribution: {dict(class_counts)}")
         return dict(class_counts)
 
@@ -207,17 +229,12 @@ class IncrementalTrainer:
             f"Checkpoint loaded | Epoch: {self.current_epoch}, Best mIoU: {self.best_metric:.4f}"
         )
 
-    def create_dataloader(self, villages: List[str], is_training=True, use_replay=False):
-
+    def create_dataloader(self, villages, is_training=True, use_replay=False):
         transform = (
             get_training_augmentation(self.config)
-            if is_training else
-            get_validation_augmentation(self.config)
+            if is_training
+            else get_validation_augmentation(self.config)
         )
-
-        # OPTIMIZATION: Apply tile-based split consistently for all cases
-        # (both single and multiple villages) - ensures 0.8/0.2 split ratio
-        split_ratio = self.config["data"].get("train_val_split", 0.8)
 
         dataset = DroneImageDataset(
             tiles_dir=self.config["data"]["tiles_dir"],
@@ -225,37 +242,29 @@ class IncrementalTrainer:
             transform=transform,
             is_training=is_training,
             village_names=villages,
-            split_ratio=split_ratio,
-            split_seed=self.config["data"].get("split_seed", 42),
+            split_ratio=self.config["data"]["train_val_split"],
+            split_seed=self.config["data"]["split_seed"],
+            split_strategy=self.config["data"].get(
+                "split_strategy", "per_village"
+            ),
         )
 
-        if use_replay and is_training and len(self.replay_buffer) > 0:
-            dataset = IncrementalDataset(
-                dataset,
-                replay_buffer=self.replay_buffer.get_all(),
-                replay_ratio=0.2
-            )
-
-        # Use balanced sampler for training to prevent class collapse
         if is_training:
-            sampler = ClassBalancedSampler(dataset, class_counts=self.class_counts)
             return DataLoader(
                 dataset,
                 batch_size=self.batch_size,
-                sampler=sampler,
+                shuffle=True,
                 num_workers=self.num_workers,
                 pin_memory=True,
-                drop_last=is_training
+                drop_last=True,
             )
         else:
-            # Standard shuffled loader for validation
             return DataLoader(
                 dataset,
                 batch_size=self.batch_size,
                 shuffle=False,
                 num_workers=self.num_workers,
                 pin_memory=True,
-                drop_last=False
             )
 
     # --------------------------------------------------------
@@ -263,7 +272,7 @@ class IncrementalTrainer:
     def train_epoch(self, loader: DataLoader):
         """
         Train for one epoch with class diversity monitoring.
-        
+
         Key anti-collapse strategies:
         1. Balanced sampling (via ClassBalancedSampler)
         2. Class weighted loss (focal + dice + lovasz)
@@ -276,7 +285,7 @@ class IncrementalTrainer:
         loss_components = {"ce": 0, "dice": 0}
         if hasattr(self.loss_fn, 'lovasz_weight') and self.loss_fn.lovasz_weight > 0:
             loss_components["lovasz"] = 0
-        
+
         # Track per-class predictions to detect collapse
         class_predictions = {i: 0 for i in range(self.config["data"]["num_seg_classes"])}
         total_predictions = 0
@@ -325,12 +334,12 @@ class IncrementalTrainer:
                     self.optimizer.zero_grad()
 
             total_loss += loss_dict["total"].item()
-            
+
             # Track loss components
             for key in loss_components.keys():
                 if key in loss_dict:
                     loss_components[key] += loss_dict[key].item()
-            
+
             # Track class predictions (from logits)
             with torch.no_grad():
                 pred_classes = outputs.argmax(dim=1)  # (B, H, W)
@@ -344,13 +353,13 @@ class IncrementalTrainer:
 
         # Compute epoch statistics
         avg_loss = total_loss / len(loader)
-        
+
         # Check for class collapse
         if total_predictions > 0:
             dominant_class_ratio = max(v / total_predictions for v in class_predictions.values())
             logger.info(f"Epoch class distribution: {class_predictions}")
             logger.info(f"Dominant class ratio: {dominant_class_ratio:.2%}")
-            
+
             # Warning if collapse detected
             if dominant_class_ratio > 0.95:
                 logger.warning(
@@ -358,7 +367,7 @@ class IncrementalTrainer:
                     f"Dominant class: {dominant_class_ratio:.2%}. "
                     f"Check loss weights and sampling."
                 )
-        
+
         # Log loss components
         for key in loss_components.keys():
             avg_component = loss_components[key] / len(loader)
@@ -430,10 +439,10 @@ class IncrementalTrainer:
             self.current_epoch += 1
 
             train_loss = self.train_epoch(train_loader)
-            
+
             # Validate every N epochs (validation_frequency setting)
             should_validate = (epoch + 1) % self.validation_frequency == 0 or epoch == self.epochs_per_batch - 1
-            
+
             if should_validate:
                 val_metrics = self.validate(val_loader)
             else:
@@ -491,30 +500,86 @@ class IncrementalTrainer:
 
     #
     ### CHANGE START: train_incremental with resume support
-    def train_incremental(self, villages: List[str], resume_checkpoint: Optional[str] = None):
+    def train_incremental(self, villages, resume_checkpoint=None):
         self.setup()
 
         if resume_checkpoint:
             self.resume_from_checkpoint(resume_checkpoint)
 
-        # OPTIMIZATION: Use tile-level split for all cases (single or multiple villages)
-        # All villages are used for both training and validation dataloaders
-        # Split is done at tile-level in create_dataloader (0.8/0.2 ratio)
-        train_villages = villages
-        val_villages = villages
+        split_strategy = self.config["data"].get(
+            "split_strategy", "per_village"
+        )
 
-        num_batches = (len(train_villages) + self.villages_per_batch - 1) // self.villages_per_batch
+        # --------------------------------------------------------
+        # Determine train and validation villages
+        # --------------------------------------------------------
+        if split_strategy == "cross_village":
+            import random
+            random.seed(self.config["data"]["split_seed"])
+            random.shuffle(villages)
 
-        # Skip batches already completed
-        start_batch = self.current_epoch // self.epochs_per_batch
+            split_idx = int(
+                len(villages) * self.config["data"]["train_val_split"]
+            )
+            train_villages = villages[:split_idx]
+            val_villages = villages[split_idx:]
+        else:  # per_village split
+            train_villages = villages
+            val_villages = villages
 
+        logger.info(f"Train villages: {train_villages}")
+        logger.info(f"Validation villages: {val_villages}")
+
+        # --------------------------------------------------------
+        # Compute number of batches
+        # --------------------------------------------------------
+        num_batches = (
+                              len(train_villages) + self.villages_per_batch - 1
+                      ) // self.villages_per_batch
+
+        # --------------------------------------------------------
+        # Resume logic: determine starting batch
+        # --------------------------------------------------------
+        start_batch = 0
+        if resume_checkpoint:
+            start_batch = self.current_epoch // self.epochs_per_batch
+            logger.info(
+                f"Resuming from batch {start_batch} "
+                f"(current_epoch={self.current_epoch}, "
+                f"epochs_per_batch={self.epochs_per_batch})"
+            )
+
+        # Safety check
+        if start_batch >= num_batches:
+            logger.warning(
+                "All batches already completed. Training will be skipped."
+            )
+            return
+
+        # --------------------------------------------------------
+        # Incremental Training Loop
+        # --------------------------------------------------------
         for batch_idx in range(start_batch, num_batches):
             start = batch_idx * self.villages_per_batch
             end = start + self.villages_per_batch
             batch_villages = train_villages[start:end]
 
-            best_miou = self.train_village_batch(batch_villages, val_villages, batch_idx)
-            logger.info(f"Batch {batch_idx} completed | Best mIoU: {best_miou:.4f}")
+            # Use same villages for train and validation in per-village split
+            current_val_villages = (
+                batch_villages
+                if split_strategy == "per_village"
+                else val_villages
+            )
+
+            best_miou = self.train_village_batch(
+                batch_villages,
+                current_val_villages,
+                batch_idx
+            )
+
+            logger.info(
+                f"Batch {batch_idx} completed | Best mIoU: {best_miou:.4f}"
+            )
 
         self.save_history()
 
@@ -571,20 +636,15 @@ class IncrementalTrainer:
 #     trainer = IncrementalTrainer(config)
 #     trainer.train_incremental(villages)
 ### CHANGE START: train function with resume
-def train(config_path: str, resume_checkpoint: Optional[str] = None):
+def train(config_path: str, resume_checkpoint=None):
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    tiles_dir = Path(config["data"]["tiles_dir"])
-    if not tiles_dir.exists():
-        logger.error("Tiles directory not found!")
-        return
+    tiles_dir = config["data"]["tiles_dir"]
+    villages = get_valid_villages(tiles_dir)
 
-    villages = [d.name for d in tiles_dir.iterdir() if d.is_dir()]
-    if not villages:
-        logger.error("No villages found.")
-        return
-    print(villages)
+    logger.info(f"Detected villages: {villages}")
+
     trainer = IncrementalTrainer(config)
     trainer.train_incremental(villages, resume_checkpoint)
 ### CHANGE END

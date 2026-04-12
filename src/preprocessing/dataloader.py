@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 class DroneImageDataset(Dataset):
     """
-    Memory-efficient dataset for drone image tiles.
-    Supports lazy loading and on-the-fly augmentation.
+    Memory-efficient dataset for drone image tiles with configurable
+    splitting strategies:
+    1. per_village – 80/20 split within each village.
+    2. cross_village – split entire villages.
     """
 
     def __init__(
@@ -41,6 +43,7 @@ class DroneImageDataset(Dataset):
         village_names: Optional[List[str]] = None,
         split_ratio: float = 0.8,
         split_seed: int = 42,
+        split_strategy: str = "per_village",
     ):
         self.tiles_dir = Path(tiles_dir)
         self.masks_dir = Path(masks_dir) if masks_dir else None
@@ -49,11 +52,14 @@ class DroneImageDataset(Dataset):
         self.load_to_memory = load_to_memory
         self.split_ratio = split_ratio
         self.split_seed = split_seed
+        self.split_strategy = split_strategy
+        self.village_names = village_names
+
         self.tile_paths: List[Path] = []
         self.mask_paths: List[Optional[Path]] = []
 
         self._collect_tiles(village_names, max_samples)
-        self._apply_train_val_split()
+        self._apply_split()
 
         self.cached_data = None
         if load_to_memory:
@@ -61,11 +67,9 @@ class DroneImageDataset(Dataset):
 
         logger.info(f"Dataset initialized with {len(self.tile_paths)} tiles")
 
-    def _collect_tiles(
-        self,
-        village_names: Optional[List[str]],
-        max_samples: Optional[int],
-    ):
+    # ----------------------------------------------------------
+
+    def _collect_tiles(self, village_names, max_samples):
         if village_names:
             villages_to_process = [
                 self.tiles_dir / name
@@ -73,13 +77,13 @@ class DroneImageDataset(Dataset):
                 if (self.tiles_dir / name).exists()
             ]
         else:
-            potential_villages = [
+            villages_to_process = [
                 d for d in self.tiles_dir.iterdir() if d.is_dir()
             ]
-            villages_to_process = (
-                potential_villages if potential_villages else [self.tiles_dir]
-            )
-        logger.info(f"is_training = {self.is_training}")
+
+        if self.masks_dir and not hasattr(self, "mask_map"):
+            self.mask_map = {m.stem: m for m in self.masks_dir.rglob("*")}
+
         for village_dir in villages_to_process:
             tiles_subdir = (
                 village_dir / "tiles"
@@ -94,212 +98,129 @@ class DroneImageDataset(Dataset):
                         return
 
                     mask_path = None
-
                     if self.masks_dir:
-                        # Build mask map only once (IMPORTANT optimization)
-                        if not hasattr(self, "mask_map"):
-                            self.mask_map = {
-                                m.stem: m for m in self.masks_dir.rglob("*")
-                            }
-
                         mask_path = self.mask_map.get(tile_path.stem)
 
-                    # 🔥 LOAD MASK FOR FILTERING
                     keep = True
-
                     if mask_path is not None:
                         try:
                             if mask_path.suffix == ".npy":
                                 mask = np.load(mask_path)
                             else:
-                                mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                                mask = cv2.imread(
+                                    str(mask_path), cv2.IMREAD_GRAYSCALE
+                                )
 
-                            if np.any(mask > 0):
-                                keep = True
-                            else:
-                                # OPTIMIZATION: Reduce background tile ratio to 10% for faster training
-                                keep = np.random.rand() < 0.10  # Down from 0.15
-
+                            if not np.any(mask > 0):
+                                keep = np.random.rand() < 0.10
                         except Exception:
-                            logger.debug(f"Skipping corrupted mask: {mask_path}")
                             keep = False
 
-                    # ✅ FINAL ADD
                     if keep:
                         self.tile_paths.append(tile_path)
                         self.mask_paths.append(mask_path)
 
-            logger.info(f"Final tiles after filtering: {len(self.tile_paths)}")
+    # ----------------------------------------------------------
 
-    def _apply_train_val_split(self):
-        """
-        Apply train-validation split after filtering.
-        Splitting is performed on tile_paths and mask_paths.
-        Ensures no overlap between training and validation datasets.
-        """
+    def _apply_split(self):
         if self.split_ratio is None:
-            logger.info("Tile splitting disabled.")
-            return
-
-        if not (0.0 < self.split_ratio < 1.0):
-            logger.warning(f"Invalid split_ratio: {self.split_ratio}")
-            return
-
-        total_tiles = len(self.tile_paths)
-
-        if total_tiles == 0:
-            logger.warning("No tiles available for splitting.")
             return
 
         import random
         random.seed(self.split_seed)
 
-        indices = list(range(total_tiles))
-        random.shuffle(indices)
-
-        split_idx = int(total_tiles * self.split_ratio)
-
-        if self.is_training:
-            selected_indices = indices[:split_idx]
-            split_type = "Training"
+        if self.split_strategy == "per_village" and self.village_names:
+            self._per_village_split()
         else:
-            selected_indices = indices[split_idx:]
-            split_type = "Validation"
+            self._global_split()
 
-        # Apply split
-        self.tile_paths = [self.tile_paths[i] for i in selected_indices]
-        self.mask_paths = [self.mask_paths[i] for i in selected_indices]
+    def _per_village_split(self):
+        from collections import defaultdict
+        import random
+
+        village_tiles = defaultdict(list)
+
+        for tile, mask in zip(self.tile_paths, self.mask_paths):
+            village = tile.parents[1].name
+            village_tiles[village].append((tile, mask))
+
+        train_tiles, val_tiles = [], []
+
+        for village, items in village_tiles.items():
+            random.shuffle(items)
+            split_idx = int(len(items) * self.split_ratio)
+
+            train_tiles.extend(items[:split_idx])
+            val_tiles.extend(items[split_idx:])
+
+        selected = train_tiles if self.is_training else val_tiles
+
+        self.tile_paths = [t[0] for t in selected]
+        self.mask_paths = [t[1] for t in selected]
 
         logger.info(
-            f"{split_type} split applied: {len(self.tile_paths)} tiles "
-            f"(split_ratio={self.split_ratio})"
+            f"{'Training' if self.is_training else 'Validation'} "
+            f"per-village split applied: {len(self.tile_paths)} tiles"
         )
 
-    def _find_mask_path(
-        self, tile_path: Path, village_name: str
-    ) -> Optional[Path]:
+    def _global_split(self):
+        import random
 
-        tile_name = tile_path.stem
+        indices = list(range(len(self.tile_paths)))
+        random.shuffle(indices)
 
-        possible_paths = [
-            self.masks_dir / village_name / "masks" / f"{tile_name}.npy",
-            self.masks_dir / village_name / "masks" / f"{tile_name}.png",
-            self.masks_dir / village_name / f"{tile_name}.npy",
-            self.masks_dir / village_name / f"{tile_name}.png",
-            self.masks_dir / f"{tile_name}.npy",
-            self.masks_dir / f"{tile_name}.png",
-        ]
+        split_idx = int(len(indices) * self.split_ratio)
 
-        for path in possible_paths:
-            if path.exists():
-                return path
+        selected = (
+            indices[:split_idx]
+            if self.is_training
+            else indices[split_idx:]
+        )
 
-        return None
+        self.tile_paths = [self.tile_paths[i] for i in selected]
+        self.mask_paths = [self.mask_paths[i] for i in selected]
 
-    def _preload_to_memory(self):
-        logger.info("Preloading data to memory...")
-        self.cached_data = []
+    # ----------------------------------------------------------
 
-        for idx in range(len(self.tile_paths)):
-            tile = self._load_tile(self.tile_paths[idx])
-            mask = (
-                self._load_mask(self.mask_paths[idx])
-                if idx < len(self.mask_paths)
-                else None
-            )
-            self.cached_data.append((tile, mask))
-
-        logger.info(f"Preloaded {len(self.cached_data)} samples")
-
-    def _load_tile(self, path: Path) -> np.ndarray:
-        if path.suffix == ".npy":
-            return np.load(path)
-
-        img = cv2.imread(str(path))
-        if img is not None:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        return img
-
-    def _load_mask(self, path: Optional[Path]) -> Optional[np.ndarray]:
-        if path is None or not path.exists():
-            return None
-
-        if path.suffix == ".npy":
-            return np.load(path)
-
-        return cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.tile_paths)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        if self.cached_data is not None:
-            tile, mask = self.cached_data[idx]
-        else:
-            tile = self._load_tile(self.tile_paths[idx])
-            mask = None
-            if idx < len(self.mask_paths):
-                mask = self._load_mask(self.mask_paths[idx])
+    def _load_tile(self, path):
+        if path.suffix == ".npy":
+            return np.load(path)
+        img = cv2.imread(str(path))
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    def _load_mask(self, path):
+        if path is None or not path.exists():
+            return None
+        if path.suffix == ".npy":
+            return np.load(path)
+        return cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+
+    def __getitem__(self, idx):
+        tile = self._load_tile(self.tile_paths[idx])
+        mask = self._load_mask(self.mask_paths[idx])
 
         if mask is None:
-            mask = np.zeros((tile.shape[0], tile.shape[1]), dtype=np.int64)
+            mask = np.zeros(tile.shape[:2], dtype=np.int64)
 
-            # Ensure mask matches tile dimensions
         if mask.shape[:2] != tile.shape[:2]:
-            mask = cv2.resize(mask, (tile.shape[1], tile.shape[0]), interpolation=cv2.INTER_NEAREST)
+            mask = cv2.resize(
+                mask,
+                (tile.shape[1], tile.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
         if self.transform:
             transformed = self.transform(image=tile, mask=mask)
             tile = transformed["image"]
-            mask = transformed["mask"]
-            if not isinstance(mask, torch.Tensor):
-                mask = torch.from_numpy(mask)
-            if mask.ndim == 3:
-                mask = mask.squeeze(0)
-            mask = mask.long()
+            mask = transformed["mask"].long()
         else:
             tile = torch.from_numpy(tile.transpose(2, 0, 1)).float() / 255.0
             mask = torch.from_numpy(mask).long()
 
-        return {"image": tile, "mask": mask, "path": str(self.tile_paths[idx])}
-
-        # =====================================
-
-        # if self.cached_data is not None:
-        #     tile, mask = self.cached_data[idx]
-        # else:
-        #     tile = self._load_tile(self.tile_paths[idx])
-        #     mask = None
-        #     if idx < len(self.mask_paths):
-        #         mask = self._load_mask(self.mask_paths[idx])
-        #
-        # if mask is None:
-        #     mask = np.zeros(
-        #         (tile.shape[0], tile.shape[1]), dtype=np.int64
-        #     )
-        #
-        # if self.transform:
-        #     transformed = self.transform(image=tile, mask=mask)
-        #     tile = transformed["image"]
-        #     mask = transformed["mask"]
-        #     if not isinstance(mask, torch.Tensor):
-        #         mask = torch.from_numpy(mask)
-        #
-        #     if mask.ndim == 3:
-        #         mask = mask.squeeze(0)
-        #
-        #     mask = mask.long()
-        # else:
-        #     tile = (
-        #         torch.from_numpy(tile.transpose(2, 0, 1)).float() / 255.0
-        #     )
-        #     mask = torch.from_numpy(mask).long()
-        #
-        # return {
-        #     "image": tile,
-        #     "mask": mask,
-        #     "path": str(self.tile_paths[idx]),
-        # }
+        return {"image": tile, "mask": mask}
 
 
 # ==============================================================
@@ -486,7 +407,7 @@ class ReplayBuffer:
 def get_training_augmentation(config: Dict) -> A.Compose:
     """
     Advanced augmentation pipeline for satellite imagery.
-    
+
     Includes transformations that preserve structure while adding robustness:
     - Geometric: Flips, rotations, perspective shifts
     - Radiometric: Brightness, contrast, color shifts (simulate different sensors)
@@ -498,26 +419,26 @@ def get_training_augmentation(config: Dict) -> A.Compose:
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
         A.Rotate(limit=45, p=0.3, border_mode=cv2.BORDER_REFLECT_101),
-        
+
         # Perspective and elastic deformations (light)
         A.Perspective(scale=(0.05, 0.1), p=0.3),
         A.ElasticTransform(alpha=1, sigma=50, p=0.2),
-        
+
         # Radiometric augmentations (satellite-specific)
         A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
         A.RandomGamma(gamma_limit=(80, 120), p=0.3),
         A.CLAHE(clip_limit=2.0, p=0.3),  # Contrast Limited Adaptive Histogram Equalization
-        
+
         # Color channel manipulations (simulate different bands/sensors)
         A.RandomRain(p=0.1),  # Simulate atmospheric effects
         A.GaussNoise(p=0.2),
-        
+
         # Blur and edge-preserving filtering
         A.OneOf([
             A.GaussianBlur(blur_limit=3, p=1.0),
             A.MedianBlur(blur_limit=3, p=1.0),
         ], p=0.2),
-        
+
         # Normalization
         A.Normalize(
             mean=[0.485, 0.456, 0.406],  # ImageNet statistics
@@ -531,10 +452,10 @@ def get_training_augmentation(config: Dict) -> A.Compose:
 def get_validation_augmentation(config: Dict) -> A.Compose:
     """
     Create validation augmentation pipeline (minimal).
-    
+
     Args:
         config: Configuration dictionary
-    
+
     Returns:
         Albumentations Compose object
     """
@@ -554,17 +475,17 @@ def get_validation_augmentation(config: Dict) -> A.Compose:
 def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
     """
     Create training and validation dataloaders from config.
-    
+
     Args:
         config: Configuration dictionary
-    
+
     Returns:
         Tuple of (train_loader, val_loader)
     """
     # Get augmentation pipelines
     train_transform = get_training_augmentation(config)
     val_transform = get_validation_augmentation(config)
-    
+
     # Create datasets
     train_dataset = DroneImageDataset(
         tiles_dir=config["data"]["tiles_dir"],
@@ -573,14 +494,14 @@ def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
         is_training=True,
         load_to_memory=False #True for GPU
     )
-    
+
     val_dataset = DroneImageDataset(
         tiles_dir=config["data"]["tiles_dir"],
         masks_dir=config["data"].get("annotations_dir"),
         transform=val_transform,
         is_training=False,
     )
-    
+
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
@@ -590,7 +511,7 @@ def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
         pin_memory=config["hardware"].get("pin_memory", False),
         persistent_workers=True
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=config["training"].get("batch_size", 4),
@@ -598,7 +519,7 @@ def create_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader]:
         num_workers=config["training"].get("num_workers", 0),
         pin_memory=config["hardware"].get("pin_memory", False),
     )
-    
+
     return train_loader, val_loader
 
 

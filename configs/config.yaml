@@ -8,6 +8,7 @@ data:
   annotations_dir: "data/annotations"
   train_val_split: 0.8
   split_seed: 42
+  split_strategy: per_village
 
   tile_size: 256
   tile_overlap: 32
