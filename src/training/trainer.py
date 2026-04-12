@@ -116,15 +116,15 @@ class IncrementalTrainer:
         num_classes = self.config["data"]["num_seg_classes"]
         class_weights = None
         
-        # Try to compute class weights from the dataset
+        # Try to compute class weights from the dataset (fast mode: smaller sample)
         try:
-            # Create dummy dataset to compute class frequencies
+            # Create dummy dataset to compute class frequencies (reduced sample for speed)
             dummy_dataset = DroneImageDataset(
                 tiles_dir=self.config["data"]["tiles_dir"],
                 masks_dir=self.config["data"]["annotations_dir"],
                 transform=None,
                 is_training=True,
-                # max_samples=500  # Sample subset for speed
+                max_samples=200  # OPTIMIZATION: Reduced from 500 for faster initialization
             )
 
             self.class_counts = self._compute_class_frequencies(dummy_dataset)
@@ -215,11 +215,9 @@ class IncrementalTrainer:
             get_validation_augmentation(self.config)
         )
 
-        # Apply tile-based split only when a single village is available
-        if len(villages) == 1:
-            split_ratio = self.config["data"].get("train_val_split", 0.8)
-        else:
-            split_ratio = None
+        # OPTIMIZATION: Apply tile-based split consistently for all cases
+        # (both single and multiple villages) - ensures 0.8/0.2 split ratio
+        split_ratio = self.config["data"].get("train_val_split", 0.8)
 
         dataset = DroneImageDataset(
             tiles_dir=self.config["data"]["tiles_dir"],
@@ -460,7 +458,8 @@ class IncrementalTrainer:
                 logger.info(
                     f"Epoch {self.current_epoch} | "
                     f"Train Loss: {train_loss:.4f} | "
-                    f"Val mIoU: {val_metrics['mIoU']:.4f}"
+                    f"Val mIoU: {val_metrics['mIoU']:.4f} | "
+                    f"LR: {self.optimizer.param_groups[0]['lr']:.2e}"
                 )
             else:
                 logger.info(
@@ -498,15 +497,11 @@ class IncrementalTrainer:
         if resume_checkpoint:
             self.resume_from_checkpoint(resume_checkpoint)
 
-        val_ratio = 0.2
-        n_val = max(1, int(len(villages) * val_ratio))
-        if len(villages) <= 1:
-            train_villages = villages
-            val_villages = villages  # reuse same for validation (OK for testing)
-        else:
-            n_val = max(1, int(len(villages) * val_ratio))
-            val_villages = villages[-n_val:]
-            train_villages = villages[:-n_val]
+        # OPTIMIZATION: Use tile-level split for all cases (single or multiple villages)
+        # All villages are used for both training and validation dataloaders
+        # Split is done at tile-level in create_dataloader (0.8/0.2 ratio)
+        train_villages = villages
+        val_villages = villages
 
         num_batches = (len(train_villages) + self.villages_per_batch - 1) // self.villages_per_batch
 

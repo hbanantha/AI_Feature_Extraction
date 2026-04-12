@@ -117,8 +117,8 @@ class DroneImageDataset(Dataset):
                             if np.any(mask > 0):
                                 keep = True
                             else:
-                                # Keep a small percentage of background tiles
-                                keep = np.random.rand() < 0.15
+                                # OPTIMIZATION: Reduce background tile ratio to 10% for faster training
+                                keep = np.random.rand() < 0.10  # Down from 0.15
 
                         except Exception:
                             logger.debug(f"Skipping corrupted mask: {mask_path}")

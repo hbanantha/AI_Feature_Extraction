@@ -49,13 +49,12 @@ model:
 
 
 training:
-  batch_size: 8                # Reduced for RAM safety
-  num_workers: 4               # Safe for Windows
-  epochs_per_village_batch: 3 #6–8 for full, 10–15 for full , actual epoch = epochs_per_village_batch × number_of_batches \
-  #number of batches = total_villages / villages_per_batch
-  max_epochs: 12  #25–40 for full training
-  validation_frequency: 1
-  use_balanced_sampling: true`
+  batch_size: 8                      # Reduced for RAM safety (increase to 16 if GPU available)
+  num_workers: 4                     # Safe for Windows (reduce to 2 on slower systems)
+  epochs_per_village_batch: 3        # Per-village epochs (3-6 recommended)
+  max_epochs: 12                     # Total epochs across all batches (25-40 for production)
+  validation_frequency: 1            # Validate every N epochs (1 or 2 recommended)
+  use_balanced_sampling: true        # Enable class-balanced sampling (IMPORTANT for accuracy)
 
 
 optimization:
@@ -96,16 +95,14 @@ augmentation:
 
 
 inference:
-  stride: 224
-  batch_size: 1                # Avoid OOM
-
-  confidence_threshold: 0.5
-  min_building_area: 25
-  min_road_length: 10
-
-  output_dir: "outputs/predictions"
-  save_geotiff: true
-  save_shapefile: true
+  stride: 224                        # Sliding window stride (224 = 256-32, increase for speed)
+  batch_size: 1                      # Batch size for inference (1 for CPU, 4-8 for GPU)
+  confidence_threshold: 0.5          # Classification confidence threshold (0.5 recommended)
+  min_building_area: 25              # Minimum polygon area for buildings (pixels)
+  min_road_length: 10                # Minimum line length for roads (pixels)
+  output_dir: "outputs/predictions"  # Output directory for predictions
+  save_geotiff: true                 # Save prediction as GeoTIFF
+  save_shapefile: true               # Save features as shapefile/GeoPackage
 
 
 hardware:

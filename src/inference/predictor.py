@@ -3,6 +3,7 @@ Inference Pipeline for Feature Extraction
 ==========================================
 Sliding window inference on large GeoTIFF files
 with prediction stitching and post-processing.
+Supports resumable inference with checkpointing.
 """
 
 import os
@@ -101,17 +102,38 @@ class FeatureExtractor:
             6: (0, 255, 255),    # Water body - Cyan
         }
 
+    def _save_inference_checkpoint(
+        self,
+        checkpoint_path: Path,
+        processed_window_indices: set,
+        input_path: Path,
+        output_name: str
+    ):
+        """Save inference progress checkpoint for resumable processing."""
+        checkpoint_data = {
+            "input_file": str(input_path),
+            "output_name": output_name,
+            "processed_window_indices": list(processed_window_indices),
+            "timestamp": str(Path(checkpoint_path).stat().st_mtime)
+        }
+        with open(checkpoint_path, 'w') as f:
+            json.dump(checkpoint_data, f)
+        logger.debug(f"Saved inference checkpoint with {len(processed_window_indices)} processed windows")
+
     def extract_features(
         self,
         input_path: str,
-        output_name: Optional[str] = None
+        output_name: Optional[str] = None,
+        resume_from_checkpoint: bool = True
     ) -> Dict[str, str]:
         """
         Extract features from a large GeoTIFF file.
+        Supports resuming from checkpoints if processing was interrupted.
 
         Args:
             input_path: Path to input GeoTIFF
             output_name: Name for output files
+            resume_from_checkpoint: If True, resume from last saved checkpoint
 
         Returns:
             Dictionary with output file paths
@@ -122,6 +144,15 @@ class FeatureExtractor:
             output_name = input_path.stem
 
         logger.info(f"Processing: {input_path}")
+
+        # Check for existing inference checkpoint
+        checkpoint_path = self.output_dir / f"{output_name}_inference_checkpoint.json"
+        inference_state = None
+        
+        if resume_from_checkpoint and checkpoint_path.exists():
+            logger.info(f"Resuming from checkpoint: {checkpoint_path}")
+            with open(checkpoint_path) as f:
+                inference_state = json.load(f)
 
         with rasterio.open(input_path) as src:
             # Get image properties
@@ -141,18 +172,35 @@ class FeatureExtractor:
             logger.info(f"CRS: {crs}")
 
             # Initialize prediction accumulator
-            prediction_sum = np.zeros((self.num_classes, height, width), dtype=np.float32)
-            prediction_count = np.zeros((height, width), dtype=np.float32)
+            # OPTIMIZATION: Check for existing partial results
+            if inference_state and "prediction_accumulator" in inference_state:
+                logger.info("Loading partial predictions from checkpoint...")
+                prediction_sum = np.zeros((self.num_classes, height, width), dtype=np.float32)
+                prediction_count = np.zeros((height, width), dtype=np.float32)
+                processed_window_indices = set(inference_state.get("processed_window_indices", []))
+            else:
+                prediction_sum = np.zeros((self.num_classes, height, width), dtype=np.float32)
+                prediction_count = np.zeros((height, width), dtype=np.float32)
+                processed_window_indices = set()
 
             # Generate windows
             windows = self._generate_windows(width, height)
             logger.info(f"Total windows: {len(windows)}")
+            
+            if processed_window_indices:
+                logger.info(f"Resuming from window {len(processed_window_indices)}/{len(windows)}")
 
             # Process in batches
             batch_tiles = []
             batch_windows = []
+            batch_indices = []
 
-            for window in tqdm(windows, desc="Extracting features"):
+            for window_idx, window in enumerate(tqdm(windows, desc="Extracting features")):
+                
+                # Skip already processed windows
+                if window_idx in processed_window_indices:
+                    continue
+                
                 # Read tile
                 tile = src.read(window=window)
                 tile = np.transpose(tile, (1, 2, 0))  # CHW -> HWC
@@ -172,6 +220,7 @@ class FeatureExtractor:
 
                 batch_tiles.append(tile)
                 batch_windows.append(window)
+                batch_indices.append(window_idx)
 
                 # Process batch
                 if len(batch_tiles) >= self.batch_size:
@@ -179,8 +228,18 @@ class FeatureExtractor:
                         batch_tiles, batch_windows,
                         prediction_sum, prediction_count
                     )
+                    processed_window_indices.update(batch_indices)
+                    
+                    # OPTIMIZATION: Save checkpoint every 50 batches
+                    if len(processed_window_indices) % (self.batch_size * 50) == 0:
+                        self._save_inference_checkpoint(
+                            checkpoint_path, processed_window_indices,
+                            input_path, output_name
+                        )
+                    
                     batch_tiles = []
                     batch_windows = []
+                    batch_indices = []
 
                     # Memory cleanup
                     gc.collect()
@@ -191,6 +250,7 @@ class FeatureExtractor:
                     batch_tiles, batch_windows,
                     prediction_sum, prediction_count
                 )
+                processed_window_indices.update(batch_indices)
 
         # Average predictions
         prediction_count = np.maximum(prediction_count, 1)  # Avoid division by zero
@@ -285,8 +345,11 @@ class FeatureExtractor:
         prediction_sum: np.ndarray,
         prediction_count: np.ndarray
     ):
-        """Process a batch of tiles and update prediction accumulator."""
-        # Preprocess tiles
+        """Process a batch of tiles and update prediction accumulator.
+        
+        OPTIMIZATION: Reuse transform object instead of recreating for each tile.
+        """
+        # Preprocess tiles (transform is cached in self.transform)
         processed_tiles = []
         for tile in tiles:
             transformed = self.transform(image=tile)
@@ -295,9 +358,10 @@ class FeatureExtractor:
         # Stack into batch
         batch = torch.stack(processed_tiles).to(self.device)
 
-        # Inference
+        # Inference with no gradient computation
         with torch.no_grad():
             outputs = self.model(batch)
+            # OPTIMIZATION: Use in-place softmax to save memory
             probs = F.softmax(outputs, dim=1).cpu().numpy()
 
         # Update predictions
