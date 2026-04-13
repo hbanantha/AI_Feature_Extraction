@@ -103,22 +103,32 @@ class FeatureExtractor:
         }
 
     def _save_inference_checkpoint(
-        self,
-        checkpoint_path: Path,
-        processed_window_indices: set,
-        input_path: Path,
-        output_name: str
+            self,
+            checkpoint_path: Path,
+            processed_window_indices: set,
+            input_path: Path,
+            output_name: str
     ):
         """Save inference progress checkpoint for resumable processing."""
+        from datetime import datetime
+
         checkpoint_data = {
             "input_file": str(input_path),
             "output_name": output_name,
             "processed_window_indices": list(processed_window_indices),
-            "timestamp": str(Path(checkpoint_path).stat().st_mtime)
+            "timestamp": datetime.now().isoformat()
         }
-        with open(checkpoint_path, 'w') as f:
-            json.dump(checkpoint_data, f)
-        logger.debug(f"Saved inference checkpoint with {len(processed_window_indices)} processed windows")
+
+        # Ensure parent directory exists
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(checkpoint_path, "w") as f:
+            json.dump(checkpoint_data, f, indent=2)
+
+        logger.debug(
+            f"Saved inference checkpoint with "
+            f"{len(processed_window_indices)} processed windows"
+        )
 
     def extract_features(
         self,
