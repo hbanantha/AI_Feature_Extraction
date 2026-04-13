@@ -209,7 +209,7 @@ python main.py train --config configs/config.yaml
 python main.py train --config configs/config.yaml \
     --resume outputs/checkpoints/batch_best.pth  
     
-# Resume from the last/best modelcheckpoint  
+# Resume from the last/best modelcheckpoint  ++
 python main.py train --config configs/config.yaml \
     --resume outputs/checkpoints/best.pth      
     

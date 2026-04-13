@@ -442,39 +442,58 @@ class FeatureExtractor:
 
         logger.info(f"Visualization saved: {output_path}")
 
-
     def _save_metadata(
-        self,
-        input_path: Path,
-        output_paths: Dict[str, str],
-        predictions: np.ndarray,
-        output_path: Path,
-        crs
+            self,
+            input_path: Path,
+            output_paths: Dict[str, str],
+            predictions: np.ndarray,
+            output_path: Path,
+            crs
     ):
         """Save extraction metadata."""
+        # Convert Path objects to strings
+        input_path = str(input_path)
+        output_path = str(output_path)
+
+        # Ensure all output paths are JSON serializable
+        output_paths_serializable = {
+            key: str(value) for key, value in output_paths.items()
+        }
+
         # Calculate statistics
         unique, counts = np.unique(predictions, return_counts=True)
         class_stats = {}
-        total_pixels = predictions.size
+        total_pixels = int(predictions.size)
 
         for idx, count in zip(unique, counts):
-            class_name = self.class_names[idx] if idx < len(self.class_names) else f"class_{idx}"
+            idx = int(idx)
+            count = int(count)
+            class_name = (
+                self.class_names[idx]
+                if idx < len(self.class_names)
+                else f"class_{idx}"
+            )
+
             class_stats[class_name] = {
-                "pixel_count": int(count),
+                "pixel_count": count,
                 "percentage": float(count / total_pixels * 100)
             }
 
         metadata = {
-            "input_file": str(input_path),
-            "output_files": output_paths,
+            "input_file": input_path,
+            "output_files": output_paths_serializable,
             "crs": str(crs),
-            "tile_size": self.tile_size,
-            "stride": self.stride,
-            "confidence_threshold": self.confidence_threshold,
-            "class_statistics": class_stats
+            "tile_size": int(self.tile_size),
+            "stride": int(self.stride),
+            "confidence_threshold": float(self.confidence_threshold),
+            "class_statistics": class_stats,
         }
 
-        with open(output_path, 'w') as f:
+        # Ensure directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Save metadata
+        with open(output_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
         logger.info(f"Metadata saved: {output_path}")
