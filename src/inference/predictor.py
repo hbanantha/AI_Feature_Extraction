@@ -24,6 +24,8 @@ from rasterio.crs import CRS
 import geopandas as gpd
 from shapely.geometry import shape, Polygon, MultiPolygon
 import cv2
+from src.models.segmentation import load_model as load_pytorch_model
+from src.inference.onnx_inference import load_onnx_model
 
 from ..models import load_model, create_model
 from ..preprocessing import get_validation_augmentation
@@ -43,7 +45,8 @@ class FeatureExtractor:
         self,
         config: Dict,
         model_path: str,
-        device: str = "cpu"
+        device: str = "cpu",
+        model_type="pytorch"
     ):
         """
         Initialize feature extractor.
@@ -55,6 +58,13 @@ class FeatureExtractor:
         """
         self.config = config
         self.device = device
+        self.model_type = model_type
+
+        if model_type == "onnx":
+            self.model = load_onnx_model(model_path)
+        else:
+            self.model = load_pytorch_model(model_path, config, device)
+            self.model.eval()
 
         # Inference settings
         self.tile_size = config["data"]["tile_size"]
@@ -68,8 +78,8 @@ class FeatureExtractor:
         self.class_colors = self._get_class_colors()
 
         # Load model
-        self.model = load_model(model_path, config, device)
-        self.model.eval()
+        # self.model = load_model(model_path, config, device)
+        # self.model.eval()
 
         # Preprocessing
         self.transform = get_validation_augmentation(config)
@@ -358,12 +368,34 @@ class FeatureExtractor:
             transformed = self.transform(image=tile)
             processed_tiles.append(transformed["image"])
 
-        batch = torch.stack(processed_tiles).to(self.device)
+        # Stack tiles into a batch tensor
+        batch = torch.stack(processed_tiles)
 
-        with torch.no_grad():
-            outputs = self.model(batch)
-            probs = F.softmax(outputs, dim=1).cpu().numpy()
+        # ==============================
+        # 🔹 Unified Inference Block
+        # ==============================
+        if self.model_type == "onnx":
+            # Convert to NumPy for ONNX Runtime
+            input_batch = batch.cpu().numpy()
+            input_name = self.model.get_inputs()[0].name
 
+            outputs = self.model.run(None, {input_name: input_batch})
+            logits = outputs[0]
+
+            # Apply softmax
+            exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
+            probs = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+
+        else:
+            # PyTorch inference
+            batch = batch.to(self.device)
+            with torch.no_grad():
+                outputs = self.model(batch)
+                probs = F.softmax(outputs, dim=1).cpu().numpy()
+
+        # ==============================
+        # 🔹 Update Prediction Maps
+        # ==============================
         for prob, window in zip(probs, windows):
             row_start = window.row_off
             row_end = row_start + window.height
@@ -580,15 +612,26 @@ def run_inference(
     # Determine device
     device = config["hardware"]["device"]
 
+    # Determine model type
+    model_ext = Path(model_path).suffix.lower()
+    if model_ext == ".onnx":
+        model_type = "onnx"
+    elif model_ext in [".pth", ".pt"]:
+        model_type = "pytorch"
+    else:
+        raise ValueError(f"Unsupported model format: {model_ext}")
+
+    logger.info(f"Using {model_type.upper()} model for inference: {model_path}")
+
     input_path = Path(input_path)
 
     if input_path.is_file():
         # Single file
-        extractor = FeatureExtractor(config, model_path, device)
+        extractor = FeatureExtractor(config, model_path, device, model_type)
         extractor.extract_features(str(input_path))
     else:
         # Directory
-        batch_inference = BatchInference(config, model_path, device)
+        batch_inference = BatchInference(config, model_path, device, model_type)
         batch_inference.process_directory(str(input_path))
 
 
