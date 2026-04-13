@@ -217,10 +217,16 @@ python main.py train --config configs/config.yaml \
 python main.py evaluate --config configs/config.yaml \
     --model outputs/checkpoints/best_model.pth
 
-# Run inference
+# Run inference for single TIFF file
 python main.py inference --config configs/config.yaml \
     --model outputs/checkpoints/best_model.pth \
     --input data/test/village.tif \
+    --output outputs/predictions
+    
+# Run inference for all TIFF files in a directory
+python main.py inference --config configs/config.yaml \
+    --model outputs/checkpoints/best_model.pth \
+    --input data/test/ \
     --output outputs/predictions
 
 # Optimize model

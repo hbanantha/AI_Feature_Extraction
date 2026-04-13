@@ -542,7 +542,20 @@ class IncrementalTrainer:
         # --------------------------------------------------------
         start_batch = 0
         if resume_checkpoint:
-            start_batch = self.current_epoch // self.epochs_per_batch
+            calculated_batch = self.current_epoch // self.epochs_per_batch
+
+            # If new villages are provided, restart incremental batching
+            if calculated_batch >= num_batches:
+                logger.info(
+                    "Checkpoint corresponds to a previous dataset. "
+                    "Resetting batch index to 0 for new villages while "
+                    "retaining learned weights."
+                )
+                start_batch = 0
+                self.current_epoch = 0  # Reset epoch counter for clean scheduling
+            else:
+                start_batch = calculated_batch
+
             logger.info(
                 f"Resuming from batch {start_batch} "
                 f"(current_epoch={self.current_epoch}, "

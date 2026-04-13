@@ -23,6 +23,7 @@ tqdm>=4.65.0
 # Model optimization 
 onnx>=1.14.0 
 onnxruntime>=1.15.0
+onnxscript
 
 # Utilities 
 pyyaml>=6.0 

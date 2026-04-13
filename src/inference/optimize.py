@@ -19,7 +19,6 @@ import numpy as np
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 class ModelOptimizer:
     """
     Optimize models for deployment on CPU.
@@ -171,7 +170,7 @@ class ModelOptimizer:
         self,
         output_path: str,
         input_shape: Tuple[int, int, int, int] = (1, 3, 256, 256),
-        opset_version: int = 12
+        opset_version: int = 18
     ):
         """
         Export model to ONNX format.
@@ -199,7 +198,7 @@ class ModelOptimizer:
             do_constant_folding=True,
             input_names=['input'],
             output_names=['output'],
-            dynamic_axes={
+            dynamic_shapes={
                 'input': {0: 'batch_size'},
                 'output': {0: 'batch_size'}
             }
