@@ -205,6 +205,14 @@ python main.py preprocess --config configs/config.yaml \
 # Train the model
 python main.py train --config configs/config.yaml
 
+# Resume training from a checkpoint
+python main.py train --config configs/config.yaml \
+    --resume outputs/checkpoints/batch_best.pth  
+    
+# Resume from the last/best modelcheckpoint  
+python main.py train --config configs/config.yaml \
+    --resume outputs/checkpoints/best.pth      
+    
 # Run Evaluation
 python main.py evaluate --config configs/config.yaml \
     --model outputs/checkpoints/best_model.pth
