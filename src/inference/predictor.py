@@ -175,12 +175,12 @@ class FeatureExtractor:
             # OPTIMIZATION: Check for existing partial results
             if inference_state and "prediction_accumulator" in inference_state:
                 logger.info("Loading partial predictions from checkpoint...")
-                prediction_sum = np.zeros((self.num_classes, height, width), dtype=np.float32)
-                prediction_count = np.zeros((height, width), dtype=np.float32)
+                class_map = np.zeros((height, width), dtype=np.uint8)
+                confidence_map = np.zeros((height, width), dtype=np.float16)
                 processed_window_indices = set(inference_state.get("processed_window_indices", []))
             else:
-                prediction_sum = np.zeros((self.num_classes, height, width), dtype=np.float32)
-                prediction_count = np.zeros((height, width), dtype=np.float32)
+                class_map = np.zeros((height, width), dtype=np.uint8)
+                confidence_map = np.zeros((height, width), dtype=np.float16)
                 processed_window_indices = set()
 
             # Generate windows
@@ -226,7 +226,7 @@ class FeatureExtractor:
                 if len(batch_tiles) >= self.batch_size:
                     self._process_batch(
                         batch_tiles, batch_windows,
-                        prediction_sum, prediction_count
+                        class_map, confidence_map
                     )
                     processed_window_indices.update(batch_indices)
                     
@@ -248,17 +248,13 @@ class FeatureExtractor:
             if batch_tiles:
                 self._process_batch(
                     batch_tiles, batch_windows,
-                    prediction_sum, prediction_count
+                    class_map, confidence_map
                 )
                 processed_window_indices.update(batch_indices)
 
-        # Average predictions
-        prediction_count = np.maximum(prediction_count, 1)  # Avoid division by zero
-        prediction_avg = prediction_sum / prediction_count
-
-        # Get final class predictions
-        class_predictions = np.argmax(prediction_avg, axis=0).astype(np.uint8)
-        confidence = np.max(prediction_avg, axis=0)
+        # Class predictions
+        class_predictions = class_map
+        confidence = confidence_map.astype(np.float32)
 
         # Apply confidence threshold
         class_predictions[confidence < self.confidence_threshold] = 0
@@ -339,40 +335,40 @@ class FeatureExtractor:
         return windows
 
     def _process_batch(
-        self,
-        tiles: List[np.ndarray],
-        windows: List[Window],
-        prediction_sum: np.ndarray,
-        prediction_count: np.ndarray
+            self,
+            tiles: List[np.ndarray],
+            windows: List[Window],
+            class_map: np.ndarray,
+            confidence_map: np.ndarray
     ):
-        """Process a batch of tiles and update prediction accumulator.
-        
-        OPTIMIZATION: Reuse transform object instead of recreating for each tile.
-        """
-        # Preprocess tiles (transform is cached in self.transform)
+        """Process a batch of tiles and update predictions directly."""
+
         processed_tiles = []
         for tile in tiles:
             transformed = self.transform(image=tile)
             processed_tiles.append(transformed["image"])
 
-        # Stack into batch
         batch = torch.stack(processed_tiles).to(self.device)
 
-        # Inference with no gradient computation
         with torch.no_grad():
             outputs = self.model(batch)
-            # OPTIMIZATION: Use in-place softmax to save memory
             probs = F.softmax(outputs, dim=1).cpu().numpy()
 
-        # Update predictions
         for prob, window in zip(probs, windows):
             row_start = window.row_off
             row_end = row_start + window.height
             col_start = window.col_off
             col_end = col_start + window.width
 
-            prediction_sum[:, row_start:row_end, col_start:col_end] += prob
-            prediction_count[row_start:row_end, col_start:col_end] += 1
+            pred_class = np.argmax(prob, axis=0).astype(np.uint8)
+            pred_conf = np.max(prob, axis=0).astype(np.float16)
+
+            # Update only where confidence is higher
+            existing_conf = confidence_map[row_start:row_end, col_start:col_end]
+            mask = pred_conf > existing_conf
+
+            class_map[row_start:row_end, col_start:col_end][mask] = pred_class[mask]
+            confidence_map[row_start:row_end, col_start:col_end][mask] = pred_conf[mask]
 
     def _save_prediction_raster(
         self,
