@@ -219,6 +219,7 @@ python main.py evaluate --config configs/config.yaml \
 
 # Run inference for single TIFF file
 python main.py inference --config configs/config.yaml \
+python main.py inference --config configs/config.yaml \
     --model outputs/checkpoints/best_model.pth \
     --input data/test/village.tif \
     --output outputs/predictions

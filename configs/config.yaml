@@ -50,10 +50,10 @@ model:
 
 
 training:
-  batch_size: 8                      # Reduced for RAM safety (increase to 16 if GPU available)
+  batch_size: 10                      # Reduced for RAM safety (increase to 16 if GPU available)
   num_workers: 4                     # Safe for Windows (reduce to 2 on slower systems)
   epochs_per_village_batch: 3        # Per-village epochs (3-6 recommended)
-  max_epochs: 12                     # Total epochs across all batches (25-40 for production)
+  max_epochs: 5                     # Total epochs across all batches (25-40 for production)
   validation_frequency: 1            # Validate every N epochs (1 or 2 recommended)
   use_balanced_sampling: true        # Enable class-balanced sampling (IMPORTANT for accuracy)
 
@@ -109,7 +109,7 @@ inference:
 hardware:
   device: "cpu"               # fallback handled in code
   pin_memory: true
-  memory_limit_gb: 12
+  memory_limit_gb: 16
 
 
 logging:

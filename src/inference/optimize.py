@@ -196,9 +196,10 @@ class ModelOptimizer:
             export_params=True,
             opset_version=opset_version,
             do_constant_folding=True,
+            dynamo=False,
             input_names=['input'],
             output_names=['output'],
-            dynamic_shapes={
+            dynamic_axes={
                 'input': {0: 'batch_size'},
                 'output': {0: 'batch_size'}
             }

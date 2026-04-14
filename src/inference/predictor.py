@@ -100,6 +100,22 @@ class FeatureExtractor:
         logger.info("Feature extractor initialized")
         logger.info(f"Tile size: {self.tile_size}, Stride: {self.stride}")
 
+    def _get_village_output_dir(self, output_name: str) -> Path:
+        """Return the per-village output directory."""
+        village_output_dir = self.output_dir / output_name
+        village_output_dir.mkdir(parents=True, exist_ok=True)
+        return village_output_dir
+
+    def _create_gis_exporter(self, output_dir: Path, crs=None) -> GISExporter:
+        """Create a GIS exporter scoped to a single village output directory."""
+        return GISExporter(
+            output_dir=str(output_dir),
+            crs=crs,
+            min_polygon_area=self.config["inference"].get("min_building_area", 10.0),
+            min_line_length=self.config["inference"].get("min_road_length", 5.0),
+            config=self.config
+        )
+
     def _get_class_colors(self) -> Dict[int, Tuple[int, int, int]]:
         """Get color mapping for visualization."""
         return {
@@ -164,9 +180,10 @@ class FeatureExtractor:
             output_name = input_path.stem
 
         logger.info(f"Processing: {input_path}")
+        village_output_dir = self._get_village_output_dir(output_name)
 
         # Check for existing inference checkpoint
-        checkpoint_path = self.output_dir / f"{output_name}_inference_checkpoint.json"
+        checkpoint_path = village_output_dir / f"{output_name}_inference_checkpoint.json"
         inference_state = None
         
         if resume_from_checkpoint and checkpoint_path.exists():
@@ -183,10 +200,13 @@ class FeatureExtractor:
 
             # Update GIS exporter with source CRS
             if crs is not None:
-                self.gis_exporter.crs = crs
+                gis_exporter = self._create_gis_exporter(village_output_dir, crs)
             else:
                 logger.warning("No CRS found in source, using WGS84")
-                self.gis_exporter.crs = CRS.from_epsg(4326)
+                gis_exporter = self._create_gis_exporter(
+                    village_output_dir,
+                    CRS.from_epsg(4326)
+                )
 
             logger.info(f"Image size: {width} x {height}")
             logger.info(f"CRS: {crs}")
@@ -283,7 +303,7 @@ class FeatureExtractor:
         output_paths = {}
 
         # Save prediction raster
-        pred_path = self.output_dir / f"{output_name}_predictions.tif"
+        pred_path = village_output_dir / f"{output_name}_predictions.tif"
         self._save_prediction_raster(
             class_predictions, pred_path,
             crs, transform, width, height
@@ -291,7 +311,7 @@ class FeatureExtractor:
         output_paths["prediction_raster"] = str(pred_path)
 
         # Save colored visualization
-        vis_path = self.output_dir / f"{output_name}_visualization.tif"
+        vis_path = village_output_dir / f"{output_name}_visualization.tif"
         self._save_visualization(
             class_predictions, vis_path,
             crs, transform, width, height
@@ -300,7 +320,7 @@ class FeatureExtractor:
 
         # Export to GIS formats (Shapefile + GeoPackage)
         logger.info("Exporting predictions to GIS formats...")
-        gis_outputs = self.gis_exporter.export_predictions(
+        gis_outputs = gis_exporter.export_predictions(
             class_predictions,
             transform,
             output_name,
@@ -309,14 +329,14 @@ class FeatureExtractor:
         output_paths.update(gis_outputs)
 
         # Save metadata
-        meta_path = self.output_dir / f"{output_name}_metadata.json"
+        meta_path = village_output_dir / f"{output_name}_metadata.json"
         self._save_metadata(
             input_path, output_paths, class_predictions,
             meta_path, crs
         )
         output_paths["metadata"] = str(meta_path)
 
-        logger.info(f"Feature extraction complete. Outputs saved to: {self.output_dir}")
+        logger.info(f"Feature extraction complete. Outputs saved to: {village_output_dir}")
 
         return output_paths
 
@@ -540,9 +560,10 @@ class BatchInference:
         self,
         config: Dict,
         model_path: str,
-        device: str = "cpu"
+        device: str = "cpu",
+        model_type: str = "pytorch"
     ):
-        self.extractor = FeatureExtractor(config, model_path, device)
+        self.extractor = FeatureExtractor(config, model_path, device, model_type)
 
     def process_directory(
         self,
