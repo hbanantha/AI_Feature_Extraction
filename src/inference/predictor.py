@@ -394,10 +394,19 @@ class FeatureExtractor:
         Process a batch of tiles with class-specific model inference.
         - Primary model for all classes
         - Waterbody model replaces waterbody channel if available
+        - Empty/no-data regions masked to prevent false waterbody detection
         """
 
         processed_tiles = []
+        no_data_masks = []  # Track empty regions for each tile
+        
         for tile in tiles:
+            # Detect no-data/empty regions (all zeros or near-zero)
+            # Valid tiles should have at least some non-zero pixel values
+            tile_gray = cv2.cvtColor(tile, cv2.COLOR_RGB2GRAY)
+            no_data_mask = tile_gray < 5  # Threshold for empty pixels
+            no_data_masks.append(no_data_mask)
+            
             transformed = self.transform(image=tile)
             processed_tiles.append(transformed["image"])
 
@@ -454,6 +463,13 @@ class FeatureExtractor:
                         waterbody_probs = F.softmax(waterbody_outputs, dim=1).cpu().numpy()
                 
                 # Replace waterbody channel (index 6) with specialized model predictions
+                # BUT: Only where data is valid (not empty/no-data regions)
+                for i, no_data_mask in enumerate(no_data_masks):
+                    # Set waterbody probability to 0 in no-data regions
+                    waterbody_probs[i, self.waterbody_idx, no_data_mask] = 0
+                    # Boost background probability in no-data regions
+                    waterbody_probs[i, 0, no_data_mask] = 1.0
+                
                 probs[:, self.waterbody_idx, :, :] = waterbody_probs[:, self.waterbody_idx, :, :]
                 
             except Exception as e:
@@ -461,9 +477,18 @@ class FeatureExtractor:
                 # Fall back to primary model predictions
 
         # ==============================
+        # 🔹 Mask Empty Regions (No-Data)
+        # ==============================
+        for i, no_data_mask in enumerate(no_data_masks):
+            # Set all non-background probabilities to 0 in empty regions
+            probs[i, 1:, no_data_mask] = 0
+            # Ensure background (class 0) has highest probability in empty regions
+            probs[i, 0, no_data_mask] = 1.0
+
+        # ==============================
         # 🔹 Update Prediction Maps
         # ==============================
-        for prob, window in zip(probs, windows):
+        for prob, window, no_data_mask in zip(probs, windows, no_data_masks):
             row_start = window.row_off
             row_end = row_start + window.height
             col_start = window.col_off
@@ -471,6 +496,10 @@ class FeatureExtractor:
 
             pred_class = np.argmax(prob, axis=0).astype(np.uint8)
             pred_conf = np.max(prob, axis=0).astype(np.float16)
+
+            # Force empty regions to background class
+            pred_class[no_data_mask] = 0
+            pred_conf[no_data_mask] = 0.0
 
             # Update only where confidence is higher
             existing_conf = confidence_map[row_start:row_end, col_start:col_end]
@@ -605,14 +634,27 @@ class FeatureExtractor:
     ):
         """
         Load class-specific specialized models.
-        Currently loads waterbody model from batch_3_best.pth if available.
+        Currently loads waterbody model from batch_3_best.pth or batch_3_best.onnx if available.
         """
-        # Load waterbody-specific model
-        waterbody_model_path = Path("outputs/checkpoints/batch_3_best.pth")
+        # Try to find waterbody-specific model (.onnx or .pth)
+        checkpoint_dir = Path("outputs/checkpoints")
+        waterbody_pth = checkpoint_dir / "batch_3_best.pth"
+        waterbody_onnx = checkpoint_dir / "batch_3_best.onnx"
         
-        if waterbody_model_path.exists():
+        waterbody_model_path = None
+        waterbody_model_format = None
+        
+        # Prefer .onnx if available, otherwise use .pth
+        if waterbody_onnx.exists():
+            waterbody_model_path = waterbody_onnx
+            waterbody_model_format = "onnx"
+        elif waterbody_pth.exists():
+            waterbody_model_path = waterbody_pth
+            waterbody_model_format = "pytorch"
+        
+        if waterbody_model_path is not None:
             try:
-                if model_type == "onnx":
+                if waterbody_model_format == "onnx":
                     self.waterbody_model = load_onnx_model(str(waterbody_model_path))
                 else:
                     self.waterbody_model = load_pytorch_model(
@@ -627,7 +669,7 @@ class FeatureExtractor:
                 logger.warning(f"Failed to load waterbody model: {e}")
                 self.waterbody_model = None
         else:
-            logger.debug(f"Waterbody model not found at {waterbody_model_path}")
+            logger.debug(f"Waterbody model not found at {checkpoint_dir / 'batch_3_best.*'}")
             self.waterbody_model = None
 
 

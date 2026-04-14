@@ -173,10 +173,10 @@ class ModelOptimizer:
         opset_version: int = 18
     ):
         """
-        Export model to ONNX format.
+        Export model to ONNX format as a single file.
 
         Args:
-            output_path: Output file path
+            output_path: Output file path (.onnx)
             input_shape: Input tensor shape (B, C, H, W)
             opset_version: ONNX opset version
         """
@@ -188,7 +188,7 @@ class ModelOptimizer:
         # Create dummy input
         dummy_input = torch.randn(*input_shape)
 
-        # Export
+        # Export with single-file format (no .data companion file)
         torch.onnx.export(
             model,
             dummy_input,
@@ -393,6 +393,9 @@ def optimize_for_deployment(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Get checkpoint basename (e.g., batch_0_best from batch_0_best.pth)
+    checkpoint_name = Path(model_path).stem
+
     # Initialize optimizer
     optimizer = ModelOptimizer(model, config)
 
@@ -421,11 +424,12 @@ def optimize_for_deployment(
         logger.info(f"Quantized model saved: {quant_path}")
 
     if export_onnx:
-        onnx_path = output_dir / "model.onnx"
+        # Use checkpoint name for ONNX file (e.g., batch_0_best.onnx instead of model.onnx)
+        onnx_path = output_dir / f"{checkpoint_name}.onnx"
         optimizer.export_onnx(str(onnx_path))
 
         # Export TorchScript
-        ts_path = output_dir / "model_traced.pt"
+        ts_path = output_dir / f"{checkpoint_name}_traced.pt"
         optimizer.export_torchscript(str(ts_path))
 
     logger.info("\nOptimization complete!")
