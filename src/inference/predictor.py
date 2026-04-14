@@ -60,11 +60,16 @@ class FeatureExtractor:
         self.device = device
         self.model_type = model_type
 
+        # Load primary model
         if model_type == "onnx":
             self.model = load_onnx_model(model_path)
         else:
             self.model = load_pytorch_model(model_path, config, device)
             self.model.eval()
+
+        # Load class-specific models (waterbody specialized model)
+        self.waterbody_model = None
+        self._load_class_specific_models(config, device, model_type)
 
         # Inference settings
         self.tile_size = config["data"]["tile_size"]
@@ -76,10 +81,12 @@ class FeatureExtractor:
         self.num_classes = config["data"]["num_seg_classes"]
         self.class_names = list(config["data"]["segmentation_classes"].values())
         self.class_colors = self._get_class_colors()
-
-        # Load model
-        # self.model = load_model(model_path, config, device)
-        # self.model.eval()
+        
+        # Create mapping from class name to index
+        self.class_name_to_idx = {
+            name: idx for idx, name in enumerate(self.class_names)
+        }
+        self.waterbody_idx = self.class_name_to_idx.get("waterbody", 6)
 
         # Preprocessing
         self.transform = get_validation_augmentation(config)
@@ -99,6 +106,8 @@ class FeatureExtractor:
 
         logger.info("Feature extractor initialized")
         logger.info(f"Tile size: {self.tile_size}, Stride: {self.stride}")
+        if self.waterbody_model:
+            logger.info("Waterbody class-specific model loaded")
 
     def _get_village_output_dir(self, output_name: str) -> Path:
         """Return the per-village output directory."""
@@ -381,7 +390,11 @@ class FeatureExtractor:
             class_map: np.ndarray,
             confidence_map: np.ndarray
     ):
-        """Process a batch of tiles and update predictions directly."""
+        """
+        Process a batch of tiles with class-specific model inference.
+        - Primary model for all classes
+        - Waterbody model replaces waterbody channel if available
+        """
 
         processed_tiles = []
         for tile in tiles:
@@ -392,7 +405,7 @@ class FeatureExtractor:
         batch = torch.stack(processed_tiles)
 
         # ==============================
-        # 🔹 Unified Inference Block
+        # 🔹 Primary Model Inference
         # ==============================
         if self.model_type == "onnx":
             # Convert to NumPy for ONNX Runtime
@@ -412,6 +425,40 @@ class FeatureExtractor:
             with torch.no_grad():
                 outputs = self.model(batch)
                 probs = F.softmax(outputs, dim=1).cpu().numpy()
+
+        # ==============================
+        # 🔹 Class-Specific Model Inference (Waterbody)
+        # ==============================
+        if self.waterbody_model is not None:
+            try:
+                if self.model_type == "onnx":
+                    input_batch = batch.cpu().numpy()
+                    input_name = self.waterbody_model.get_inputs()[0].name
+                    
+                    waterbody_outputs = self.waterbody_model.run(
+                        None,
+                        {input_name: input_batch}
+                    )
+                    waterbody_logits = waterbody_outputs[0]
+                    
+                    # Apply softmax
+                    exp_logits = np.exp(
+                        waterbody_logits - np.max(waterbody_logits, axis=1, keepdims=True)
+                    )
+                    waterbody_probs = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+                else:
+                    # PyTorch inference
+                    batch_device = batch.to(self.device)
+                    with torch.no_grad():
+                        waterbody_outputs = self.waterbody_model(batch_device)
+                        waterbody_probs = F.softmax(waterbody_outputs, dim=1).cpu().numpy()
+                
+                # Replace waterbody channel (index 6) with specialized model predictions
+                probs[:, self.waterbody_idx, :, :] = waterbody_probs[:, self.waterbody_idx, :, :]
+                
+            except Exception as e:
+                logger.warning(f"Waterbody model inference failed, using primary model: {e}")
+                # Fall back to primary model predictions
 
         # ==============================
         # 🔹 Update Prediction Maps
@@ -549,6 +596,39 @@ class FeatureExtractor:
             json.dump(metadata, f, indent=2)
 
         logger.info(f"Metadata saved: {output_path}")
+
+    def _load_class_specific_models(
+        self,
+        config: Dict,
+        device: str,
+        model_type: str
+    ):
+        """
+        Load class-specific specialized models.
+        Currently loads waterbody model from batch_3_best.pth if available.
+        """
+        # Load waterbody-specific model
+        waterbody_model_path = Path("outputs/checkpoints/batch_3_best.pth")
+        
+        if waterbody_model_path.exists():
+            try:
+                if model_type == "onnx":
+                    self.waterbody_model = load_onnx_model(str(waterbody_model_path))
+                else:
+                    self.waterbody_model = load_pytorch_model(
+                        str(waterbody_model_path),
+                        config,
+                        device
+                    )
+                    self.waterbody_model.eval()
+                
+                logger.info(f"Loaded waterbody-specific model: {waterbody_model_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load waterbody model: {e}")
+                self.waterbody_model = None
+        else:
+            logger.debug(f"Waterbody model not found at {waterbody_model_path}")
+            self.waterbody_model = None
 
 
 class BatchInference:
